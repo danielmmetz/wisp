@@ -3,12 +3,15 @@
   --fg: #e6e8ee;
   --muted: #8a93a6;
   --card: #1a1d27;
+  --card-2: #20242f;
   --card-border: #2a2f3d;
   --accent: #6aa8ff;
   --accent-fg: #0b1422;
   --good: #4ade80;
   --warn: #fbbf24;
   --bad: #f87171;
+  --bubble: #232836;
+  --bubble-self: #2b3a5a;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -16,16 +19,25 @@
     --fg: #1a1d27;
     --muted: #5b6478;
     --card: #ffffff;
+    --card-2: #f5f7fa;
     --card-border: #e3e6ec;
     --accent: #2563eb;
     --accent-fg: #ffffff;
+    --bubble: #f0f2f6;
+    --bubble-self: #dce7fb;
   }
 }
 
 * { box-sizing: border-box; }
 
+/* Make sure flex/grid layout never overrides the hidden attribute. Without
+ * this, #room { display: flex } would beat the UA's [hidden] rule and the
+ * room card would render on the lobby screen. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
+  height: 100%;
   background: var(--bg);
   color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
@@ -33,18 +45,27 @@ html, body {
   line-height: 1.5;
 }
 
+/* Vertical flex shell so the room view can claim "the rest of the viewport"
+ * without each child having to know its sibling's height. The lobby still
+ * lives in a centered card and just sits at top of the column. */
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .site-header {
-  max-width: 32rem;
-  margin: 2rem auto 1.25rem;
-  padding: 0 1rem;
+  margin: 0;
+  padding: 0.5rem 1rem;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
+  flex: 0 0 auto;
 }
 
 .brand {
-  font-size: 1.5rem;
+  font-size: 1.1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--fg);
@@ -55,14 +76,73 @@ html, body {
 .tagline {
   margin: 0;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 main {
-  max-width: 32rem;
-  margin: 0 auto 2rem;
-  padding: 0 1rem;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
+
+/* Lobby keeps the centered narrow card. We constrain it inside main rather
+ * than constraining main itself, since main switches between "centered narrow
+ * lobby" and "full-bleed room". */
+#lobby {
+  width: 100%;
+  max-width: 32rem;
+  margin: 1rem auto;
+}
+
+/* Room takes the full viewport: corner-to-corner background, no rounded card
+ * border, padding only inside the panes. The flex chain (body → main → #room)
+ * is what lets the chat pane fill the available height. */
+#room {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--card);
+}
+#room .room-head {
+  padding: 0.5rem 1rem;
+  margin: 0;
+  border-bottom: 1px solid var(--card-border);
+  flex: 0 0 auto;
+}
+#room .room-head-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+#room .room-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+#room #leave-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.9rem;
+}
+#room #room-code {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+#room #room-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#room #room-status:empty { display: none; }
 
 .card {
   background: var(--card);
@@ -180,36 +260,107 @@ button.ghost:hover { color: var(--fg); }
   letter-spacing: 0.01em;
 }
 
+/* Side-by-side body: peers list on the left, chat on the right. The grid
+ * collapses to a single column below 720px so the chat pane drops below the
+ * peers list on phones. */
+/* Room body fills the remaining vertical space below the head. On desktop
+ * it's a 3-column grid: peers / drag handle / chat. The peers width is
+ * driven by a custom property the JS resizer writes to, falling back to a
+ * sensible default. On mobile we drop to a single column and hide the
+ * drag handle — touch targets that small are not worth keeping. */
+.room-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 720px) {
+  .room-body {
+    grid-template-columns: var(--peers-width, 22rem) 6px minmax(0, 1fr);
+  }
+}
+
+.peers-pane {
+  padding: 0.7rem;
+  border-bottom: 1px solid var(--card-border);
+  overflow-y: auto;
+}
+@media (min-width: 720px) {
+  .peers-pane {
+    border-bottom: 0;
+    border-right: 0;
+  }
+}
+
+.pane-resizer {
+  display: none;
+}
+@media (min-width: 720px) {
+  .pane-resizer {
+    display: block;
+    cursor: col-resize;
+    background: var(--card-border);
+    /* widen the hover hit area without widening the visible bar */
+    position: relative;
+  }
+  .pane-resizer::after {
+    content: "";
+    position: absolute;
+    inset: 0 -4px;
+  }
+  .pane-resizer:hover,
+  .pane-resizer.dragging { background: var(--accent); }
+  /* Disable text selection while dragging — without this, a fast drag will
+   * select the chat scroll text and leave it highlighted on release. */
+  body.resizing { cursor: col-resize; user-select: none; }
+}
+
 #peers {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
 }
 
+/* row2 from the mockup: minimal at rest, controls slide in on hover. The
+ * grid leaves a flex slot for the name; the .peer-extra block is positioned
+ * absolutely so it can fade in over the trailing badges without reshaping
+ * the row. On touch devices we drop the hover and just show controls. */
 .peer {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.6rem 0.75rem;
+  gap: 0.55rem;
+  padding: 0.5rem 0.7rem;
   border: 1px solid var(--card-border);
   border-radius: 10px;
+  background: var(--card-2);
+  position: relative;
+  min-height: 2.5rem;
 }
 
 .peer .indicator {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--card-border);
-  transition: background 60ms linear;
+  flex: 0 0 9px;
+  transition: background 60ms linear, box-shadow 60ms linear;
 }
-.peer.speaking .indicator { background: var(--good); }
-.peer.muted .name { color: var(--muted); text-decoration: line-through; }
-
-.peer .name { font-weight: 500; min-width: 0; }
+.peer.speaking .indicator {
+  background: var(--good);
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
+}
+.peer .name {
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.peer.is-muted .name { color: var(--muted); text-decoration: line-through; }
 .peer .name.editable {
   cursor: text;
   border-bottom: 1px dashed transparent;
@@ -229,21 +380,24 @@ button.ghost:hover { color: var(--fg); }
   max-width: 14rem;
 }
 
-.peer .quality::before {
-  content: "•";
-  font-weight: 900;
+.peer .quality {
+  font-weight: 700;
+  color: var(--good);
+  font-size: 0.9rem;
+  line-height: 1;
 }
-.peer .quality.good::before { color: var(--good); }
-.peer .quality.degraded::before { color: var(--warn); }
-.peer .quality.poor::before { color: var(--bad); }
+.peer .quality::before { content: "●"; }
+.peer .quality.degraded { color: var(--warn); }
+.peer .quality.poor { color: var(--bad); }
+.peer .quality.unknown { color: var(--muted); }
 
 .peer .transport {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--muted);
-  padding: 0.05rem 0.4rem;
-  border: 1px solid var(--card-border);
+  color: var(--good);
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--good);
   border-radius: 999px;
   white-space: nowrap;
 }
@@ -254,12 +408,6 @@ button.ghost:hover { color: var(--fg); }
   color: var(--warn);
   border-color: var(--warn);
 }
-.peer .transport.direct {
-  color: var(--good);
-  border-color: var(--good);
-}
-
-.peer .vol { width: 6rem; }
 
 .peer .cipher {
   font-size: 0.85rem;
@@ -270,10 +418,147 @@ button.ghost:hover { color: var(--fg); }
 .peer .cipher.bad { color: var(--bad); }
 .peer .cipher:empty { display: none; }
 
-#room-status {
-  margin-top: 1rem;
+.peer .peer-extra {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: linear-gradient(to right, transparent, var(--card-2) 18%);
+  padding-left: 1.5rem;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  pointer-events: none;
+}
+.peer:hover .peer-extra,
+.peer:focus-within .peer-extra {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .peer .peer-extra {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.peer .peer-extra .vol { width: 5rem; }
+
+/* Bare button with a stroke icon. Used by mute and copy-link in the room
+ * head; hover lightens to fg, the muted-row state recolors the icon red. */
+.icon-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.icon-btn:hover { color: var(--fg); background: var(--card-border); }
+.icon-btn svg { display: block; }
+
+.peer .mute .icon-mic-slash { display: none; }
+.peer.is-muted .mute .icon-mic { display: none; }
+.peer.is-muted .mute .icon-mic-slash { display: block; }
+.peer.is-muted .mute,
+.peer.is-muted .mute:hover { color: var(--bad); }
+
+/* Chat pane fills its grid cell vertically. The flex chain (room-body →
+ * chat-pane → chat-scroll) lets the scroll area soak up whatever height
+ * the cell has, with the header and compose form pinned to top and bottom. */
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--card-border);
+}
+@media (max-width: 719px) {
+  .chat-pane { border-left: 0; border-top: 1px solid var(--card-border); }
+}
+.chat-header {
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--card-border);
+}
+.chat-scroll {
+  list-style: none;
+  margin: 0;
+  padding: 0.8rem 0.9rem;
+  flex: 1;
+  /* min-height: 0 lets the flex item shrink below its content height so
+   * overflow-y: auto actually engages instead of pushing the page taller. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  overflow-y: auto;
+}
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.msg .head {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.msg .head .who {
+  color: var(--fg);
+  font-weight: 500;
+}
+.msg .head .sep { margin: 0 0.25rem; }
+.msg .body {
+  background: var(--bubble);
+  padding: 0.5rem 0.7rem;
+  border-radius: 10px;
+  align-self: flex-start;
+  max-width: 90%;
+  font-size: 0.92rem;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+.msg.self .body { background: var(--bubble-self); }
+.msg.system {
+  align-items: center;
+}
+.msg.system .body {
+  background: transparent;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.82rem;
+  padding: 0;
   text-align: center;
-  font-size: 0.85rem;
+}
+
+.chat-compose {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.7rem 0.8rem;
+  border-top: 1px solid var(--card-border);
+  background: var(--card);
+}
+.chat-compose input {
+  flex: 1;
+  background: var(--card-2);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  color: var(--fg);
+  padding: 0.5rem 0.7rem;
+  font: inherit;
+}
+.chat-compose input::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.chat-compose button {
+  padding: 0 0.9rem;
+  font-weight: 600;
 }
 
 .settings {

@@ -67,21 +67,54 @@
 
             <section id="room" class="card" hidden>
                 <header class="room-head">
-                    <div>
-                        <span class="muted">room</span>
+                    <div class="room-head-left">
                         <code id="room-code"></code>
+                        <span id="room-status" class="muted"></span>
+                    </div>
+                    <div class="room-head-right">
                         <button
                             id="copy-link"
-                            class="ghost"
+                            class="icon-btn"
+                            type="button"
                             title="Copy join link"
+                            aria-label="Copy join link"
                         >
-                            copy link
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                            </svg>
                         </button>
+                        <button id="leave-btn" class="danger">Leave</button>
                     </div>
-                    <button id="leave-btn" class="danger">Leave</button>
                 </header>
-                <ul id="peers"></ul>
-                <p id="room-status" class="muted"></p>
+                <div class="room-body">
+                    <div class="peers-pane">
+                        <ul id="peers"></ul>
+                    </div>
+                    <div
+                        id="pane-resizer"
+                        class="pane-resizer"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize peers pane"
+                        tabindex="0"
+                    ></div>
+                    <div class="chat-pane">
+                        <div class="chat-header">chat</div>
+                        <ul id="chat-messages" class="chat-scroll"></ul>
+                        <form id="chat-form" class="chat-compose" autocomplete="off">
+                            <input
+                                id="chat-input"
+                                type="text"
+                                placeholder="message the room…"
+                                maxlength="2000"
+                                autocomplete="off"
+                                spellcheck="false"
+                            />
+                            <button type="submit" class="primary">Send</button>
+                        </form>
+                    </div>
+                </div>
             </section>
         </main>
 
@@ -89,11 +122,44 @@
             <li class="peer">
                 <span class="indicator" aria-hidden="true"></span>
                 <span class="name"></span>
+                <span class="transport" aria-hidden="true"></span>
                 <span class="quality" title="connection quality"></span>
                 <span class="cipher" aria-hidden="true"></span>
-                <span class="transport" aria-hidden="true"></span>
-                <input type="range" min="0" max="200" value="100" class="vol" />
-                <button class="mute ghost">mute</button>
+                <div class="peer-extra">
+                    <input type="range" min="0" max="200" value="100" class="vol" />
+                    <button class="mute icon-btn" type="button" title="Mute" aria-label="Mute">
+                        <svg class="icon-mic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="2" width="6" height="12" rx="3" />
+                            <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                        </svg>
+                        <svg class="icon-mic-slash" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="3" y1="3" x2="21" y2="21" />
+                            <path d="M9 9v3a3 3 0 0 0 5 2.13" />
+                            <path d="M15 9.34V5a3 3 0 0 0-5.94-.6" />
+                            <path d="M19 10v2a7 7 0 0 1-.11 1.23" />
+                            <path d="M5 10v2a7 7 0 0 0 12 5" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                        </svg>
+                    </button>
+                </div>
+            </li>
+        </template>
+
+        <template id="chat-message">
+            <li class="msg">
+                <div class="head">
+                    <span class="who"></span>
+                    <span class="sep">·</span>
+                    <span class="time"></span>
+                </div>
+                <div class="body"></div>
+            </li>
+        </template>
+
+        <template id="chat-system">
+            <li class="msg system">
+                <div class="body"></div>
             </li>
         </template>
 

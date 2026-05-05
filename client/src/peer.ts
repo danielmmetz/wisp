@@ -43,6 +43,10 @@ export interface PeerCallbacks {
   // onConnectionChange surfaces ICE/connection-state transitions for the
   // quality indicator.
   onConnectionChange: (state: RTCPeerConnectionState) => void;
+  // onChat fires when a chat message arrives on the data channel. body has
+  // already been validated as a string. ts is the sender's epoch ms; not
+  // trusted for ordering, just shown as the timestamp of the message.
+  onChat?: (body: string, ts: number) => void;
 }
 
 export class Peer {
@@ -57,6 +61,7 @@ export class Peer {
   private cipher: GroupCipher | null = null;
   private localSender: RTCRtpSender | null = null;
   private senderWired = false;
+  private chatChannel: RTCDataChannel | null = null;
   // Receivers that fired ontrack before the cipher was available; wired
   // by attachCipher when the group key arrives.
   private pendingReceivers: RTCRtpReceiver[] = [];
@@ -115,6 +120,12 @@ export class Peer {
     });
     this.pc.addEventListener("connectionstatechange", () => {
       this.cb.onConnectionChange(this.pc.connectionState);
+    });
+    // The answerer waits for the offerer's data channel; the offerer creates
+    // it in start() before the SDP exchange so the channel ends up in the
+    // first offer (no extra negotiation round-trip).
+    this.pc.addEventListener("datachannel", (ev) => {
+      if (ev.channel.label === "chat") this.attachChatChannel(ev.channel);
     });
   }
 
@@ -197,7 +208,45 @@ export class Peer {
   // does nothing until handleSignal sees the offer.
   async start(): Promise<void> {
     if (!this.local.isOfferer) return;
+    // Chat data channel must be created before the offer so SCTP is in the
+    // first SDP. Reliable + ordered: the room is small and chat throughput
+    // is trivial, so reordering or loss isn't worth tolerating here.
+    this.attachChatChannel(this.pc.createDataChannel("chat", { ordered: true }));
     await this.offer({});
+  }
+
+  // sendChat dispatches a single chat message to this peer over the chat
+  // data channel. Returns false when the channel isn't open yet — the room
+  // layer can decide whether to skip or buffer.
+  sendChat(body: string, ts: number): boolean {
+    const dc = this.chatChannel;
+    if (!dc || dc.readyState !== "open") return false;
+    try {
+      dc.send(JSON.stringify({ kind: "chat", body, ts }));
+      return true;
+    } catch (err) {
+      console.warn("chat send failed", err);
+      return false;
+    }
+  }
+
+  private attachChatChannel(dc: RTCDataChannel): void {
+    this.chatChannel = dc;
+    dc.addEventListener("message", (ev) => {
+      if (typeof ev.data !== "string") return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (!parsed || typeof parsed !== "object") return;
+      const m = parsed as { kind?: unknown; body?: unknown; ts?: unknown };
+      if (m.kind !== "chat") return;
+      if (typeof m.body !== "string") return;
+      const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : Date.now();
+      this.cb.onChat?.(m.body, ts);
+    });
   }
 
   // restartIce regenerates ICE candidates without rebuilding the PC. Only

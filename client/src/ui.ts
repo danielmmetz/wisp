@@ -147,8 +147,10 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
       transportEl.title = t === "direct" ? "peer-to-peer" : "via TURN relay";
     },
     setMuted: (m) => {
-      node.classList.toggle("muted", m);
-      muteBtn.textContent = m ? "unmute" : "mute";
+      node.classList.toggle("is-muted", m);
+      const label = m ? "Unmute" : "Mute";
+      muteBtn.title = label;
+      muteBtn.setAttribute("aria-label", label);
     },
     setCipherHealth: (healthy) => {
       if (healthy) {
@@ -184,7 +186,7 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
   };
 
   muteBtn.addEventListener("click", () => {
-    const next = !node.classList.contains("muted");
+    const next = !node.classList.contains("is-muted");
     handle.setMuted(next);
     opts.onMuteToggle(next);
   });
@@ -240,6 +242,107 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
 
 export function appendPeerRow(handle: PeerRowHandle): void {
   ($("#peers") as HTMLElement).appendChild(handle.el);
+}
+
+// prependPeerRow inserts handle at the top of the peers list. Used for the
+// local peer so "you" always sits above the rest, regardless of whether
+// onJoined fires before or after the existing-peers walk on initial join.
+export function prependPeerRow(handle: PeerRowHandle): void {
+  const list = $("#peers") as HTMLElement;
+  list.insertBefore(handle.el, list.firstChild);
+}
+
+// formatTime renders a sender timestamp as HH:MM in the viewer's locale.
+// Seconds are dropped — chat in this app is small enough that minute-level
+// precision matches what the rest of the UI promises.
+function formatTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+// appendChatMessage renders a message at the end of the chat scroll. self
+// flag picks the lighter accent bubble. The scroll auto-pins to the bottom
+// when the user is already at (or near) the bottom; if they have scrolled
+// up to read history, we leave their position alone.
+//
+// `from` is the author's peer ID (localId for self). It is stamped on the
+// node as a data attribute so renameChatAuthor can rewrite history when
+// a peer renames — chat bubbles always reflect the current name, not the
+// name in effect when the message was sent.
+export function appendChatMessage(opts: {
+  from: string;
+  name: string;
+  body: string;
+  ts: number;
+  self: boolean;
+}): void {
+  const tpl = document.querySelector<HTMLTemplateElement>("#chat-message");
+  if (!tpl) throw new Error("chat-message template missing");
+  const node = tpl.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
+  if (opts.self) {
+    node.classList.add("self");
+    node.dataset.self = "1";
+  }
+  node.dataset.from = opts.from;
+  node.querySelector<HTMLElement>(".who")!.textContent = formatWho(opts.name, opts.self);
+  node.querySelector<HTMLElement>(".time")!.textContent = formatTime(opts.ts);
+  node.querySelector<HTMLElement>(".body")!.textContent = opts.body;
+  appendChatNode(node);
+}
+
+function formatWho(name: string, self: boolean): string {
+  return self ? `${name} (you)` : name;
+}
+
+// renameChatAuthor rewrites the displayed name on every existing chat
+// bubble authored by `from`. No-op when there are no past messages from
+// that peer.
+export function renameChatAuthor(from: string, name: string): void {
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  if (!list) return;
+  for (const el of list.querySelectorAll<HTMLElement>(`.msg[data-from="${cssEscape(from)}"]`)) {
+    const self = el.dataset.self === "1";
+    const who = el.querySelector<HTMLElement>(".who");
+    if (who) who.textContent = formatWho(name, self);
+  }
+}
+
+function cssEscape(s: string): string {
+  // peer IDs are 16 hex chars from the server, but accept arbitrary input
+  // defensively. Use the standard helper when available; otherwise fall
+  // back to a conservative escape that handles the characters CSS needs.
+  type CSSWithEscape = typeof CSS & { escape?: (s: string) => string };
+  const fn = (CSS as CSSWithEscape).escape;
+  if (typeof fn === "function") return fn.call(CSS, s);
+  return s.replace(/([^a-zA-Z0-9_-])/g, "\\$1");
+}
+
+export function appendChatSystem(text: string): void {
+  const tpl = document.querySelector<HTMLTemplateElement>("#chat-system");
+  if (!tpl) throw new Error("chat-system template missing");
+  const node = tpl.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
+  node.querySelector<HTMLElement>(".body")!.textContent = `— ${text} —`;
+  appendChatNode(node);
+}
+
+export function clearChat(): void {
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  list?.replaceChildren();
+}
+
+function appendChatNode(node: HTMLLIElement): void {
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  if (!list) return;
+  // "Near bottom" tolerance for sticky autoscroll. We can't always pin
+  // (the user might be reading history) — only do it when they're close
+  // enough to the tail that scroll movement won't be disorienting.
+  const distance = list.scrollHeight - list.scrollTop - list.clientHeight;
+  const stick = distance < 80;
+  list.appendChild(node);
+  if (stick) list.scrollTop = list.scrollHeight;
 }
 
 // MicLevelMeter draws a small bar that follows the live mic input, used in

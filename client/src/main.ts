@@ -12,10 +12,15 @@ import {
 import { Room } from "./room.ts";
 import {
   $,
+  appendChatMessage,
+  appendChatSystem,
   appendPeerRow,
+  clearChat,
   createMicLevelMeter,
   fillDeviceSelect,
   makePeerRow,
+  prependPeerRow,
+  renameChatAuthor,
   setLobbyError,
   setRoomStatus,
   shareLink,
@@ -113,7 +118,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       });
       row.setQuality("unknown");
       rows.set(id, row);
-      appendPeerRow(row);
+      prependPeerRow(row);
       startQualityPolling();
     },
     onPeerAdded: (id, name) => {
@@ -132,14 +137,21 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       row.setQuality("unknown");
       rows.set(id, row);
       appendPeerRow(row);
+      // Suppress the system line during initial-room population: localId is
+      // still null until onJoined fires, which happens after the existing
+      // peers are walked. Genuine peer_joined arrivals fire afterwards with
+      // localId set, so they do produce "X joined".
+      if (localId) appendChatSystem(`${name} joined`);
     },
-    onPeerRemoved: (id) => {
+    onPeerRemoved: (id, name) => {
       rows.get(id)?.destroy();
       rows.delete(id);
       remoteStreams.delete(id);
+      if (name) appendChatSystem(`${name} left`);
     },
     onPeerRenamed: (id, name) => {
       rows.get(id)?.setName(name);
+      renameChatAuthor(id, name);
     },
     onRemoteStream: (id, stream) => {
       remoteStreams.set(id, stream);
@@ -164,6 +176,15 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
     onCipherHealth: (id, healthy) => {
       rows.get(id)?.setCipherHealth(healthy);
     },
+    onChatMessage: (msg) => {
+      appendChatMessage({
+        from: msg.from,
+        name: msg.name,
+        body: msg.body,
+        ts: msg.ts,
+        self: msg.isSelf,
+      });
+    },
     onReconnecting: (attempt) => {
       setRoomStatus(`Reconnecting (attempt ${attempt})…`);
       // Visually mark all peer rows as poor while the room is in limbo.
@@ -177,6 +198,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       for (const r of rows.values()) r.destroy();
       rows.clear();
       remoteStreams.clear();
+      clearChat();
       localId = null;
       releaseMic();
       showLobby();
@@ -280,6 +302,92 @@ function leaveRoom(): void {
   room?.leave();
 }
 
+// initPaneResizer wires the vertical drag handle between the peers and chat
+// panes. Width is persisted in localStorage; on first load we use the CSS
+// default. The handle is hidden by CSS below the side-by-side breakpoint.
+const PEERS_WIDTH_KEY = "wisp.peersWidth";
+const PEERS_WIDTH_MIN = 180;
+const PEERS_WIDTH_MAX = 520;
+function initPaneResizer(): void {
+  const handle = document.querySelector<HTMLElement>("#pane-resizer");
+  const body = document.querySelector<HTMLElement>(".room-body");
+  if (!handle || !body) return;
+
+  // Restore persisted width.
+  try {
+    const saved = localStorage.getItem(PEERS_WIDTH_KEY);
+    if (saved) {
+      const px = clampPeersWidth(Number(saved));
+      if (Number.isFinite(px)) body.style.setProperty("--peers-width", `${px}px`);
+    }
+  } catch { /* localStorage unavailable */ }
+
+  let dragging = false;
+  let pointerId: number | null = null;
+
+  const onMove = (ev: PointerEvent) => {
+    if (!dragging) return;
+    // The pane width equals the horizontal distance from room-body's left
+    // edge to the cursor. clientX accounts for any page scroll already.
+    const rect = body.getBoundingClientRect();
+    const px = clampPeersWidth(ev.clientX - rect.left);
+    body.style.setProperty("--peers-width", `${px}px`);
+  };
+
+  const stop = (ev: PointerEvent) => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    if (pointerId !== null) {
+      try { handle.releasePointerCapture(pointerId); } catch { /* ignore */ }
+      pointerId = null;
+    }
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+    // Persist current width so the layout sticks across reloads.
+    const px = body.style.getPropertyValue("--peers-width").replace("px", "").trim();
+    if (px) {
+      try { localStorage.setItem(PEERS_WIDTH_KEY, px); } catch { /* ignore */ }
+    }
+    void ev;
+  };
+
+  handle.addEventListener("pointerdown", (ev) => {
+    dragging = true;
+    pointerId = ev.pointerId;
+    try { handle.setPointerCapture(ev.pointerId); } catch { /* older browsers */ }
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    ev.preventDefault();
+  });
+
+  // Keyboard nudges for accessibility — the handle is focusable as a
+  // role=separator. Each press moves 16px; Shift jumps 64px.
+  handle.addEventListener("keydown", (ev) => {
+    const step = ev.shiftKey ? 64 : 16;
+    let delta = 0;
+    if (ev.key === "ArrowLeft") delta = -step;
+    else if (ev.key === "ArrowRight") delta = step;
+    else return;
+    ev.preventDefault();
+    const current = parseFloat(getComputedStyle(body).getPropertyValue("--peers-width")) ||
+      body.querySelector<HTMLElement>(".peers-pane")?.offsetWidth || 0;
+    const next = clampPeersWidth(current + delta);
+    body.style.setProperty("--peers-width", `${next}px`);
+    try { localStorage.setItem(PEERS_WIDTH_KEY, String(next)); } catch { /* ignore */ }
+  });
+}
+
+function clampPeersWidth(px: number): number {
+  if (!Number.isFinite(px)) return PEERS_WIDTH_MIN;
+  return Math.max(PEERS_WIDTH_MIN, Math.min(PEERS_WIDTH_MAX, px));
+}
+
 // initSettings wires the device pickers and the mic test button. Test mic
 // acquires getUserMedia, populates device labels, and runs a level meter
 // so the user can confirm their setup before joining.
@@ -364,6 +472,14 @@ function init(): void {
   });
   $("#leave-btn").addEventListener("click", leaveRoom);
   $("#copy-link").addEventListener("click", () => void copyLink());
+  $("#chat-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const input = $("#chat-input") as HTMLInputElement;
+    const text = input.value;
+    if (!room || !text.trim()) return;
+    if (room.sendChat(text)) input.value = "";
+  });
+  initPaneResizer();
   $("#brand").addEventListener("click", (ev) => {
     if (!room) return;
     ev.preventDefault();

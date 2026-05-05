@@ -38,10 +38,24 @@ import type { ServerEnvelope, SignalData, TurnCreds, PeerInfo } from "./wire.ts"
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
 
+export interface ChatMessage {
+  // from is the author's peer ID — equal to our local peer ID when isSelf
+  // is true. UI uses it as a stable handle to update past bubbles when
+  // the author renames.
+  from: string;
+  isSelf: boolean;
+  // name is the author's current display name at the time the message
+  // arrived. Subsequent renames are dispatched via onPeerRenamed and the
+  // UI is responsible for refreshing past bubbles.
+  name: string;
+  body: string;
+  ts: number;
+}
+
 export interface RoomCallbacks {
   onJoined: (info: { code: string; localId: string; name: string }) => void;
   onPeerAdded: (id: string, name: string) => void;
-  onPeerRemoved: (id: string) => void;
+  onPeerRemoved: (id: string, name: string) => void;
   onPeerRenamed: (id: string, name: string) => void;
   onRemoteStream: (id: string, stream: MediaStream) => void;
   onSpeakingChange: (id: string, speaking: boolean) => void;
@@ -49,6 +63,7 @@ export interface RoomCallbacks {
   // onCipherHealth fires when sustained decrypt failures cross a threshold
   // (healthy=false) and again when decryption recovers (healthy=true).
   onCipherHealth: (id: string, healthy: boolean) => void;
+  onChatMessage: (msg: ChatMessage) => void;
   onLeft: (reason: string) => void;
   onError: (msg: string) => void;
   // onReconnecting/onReconnected let the UI surface "trying to reconnect..."
@@ -69,6 +84,11 @@ export class Room {
   private signaling: SignalingClient;
   private keypair!: EphemeralKeypair;
   private peers = new Map<string, Peer>();
+  // names tracks the latest known display name for every peer in the room
+  // (including self). Used to attribute chat messages and to surface the
+  // departing name on peer_left for the system "X left" line.
+  private names = new Map<string, string>();
+  private localName = "";
   // iceRetried tracks per-peer ICE-restart attempts so we don't loop on a
   // truly-dead path.
   private iceRetried = new Set<string>();
@@ -125,6 +145,26 @@ export class Room {
     }
   }
 
+  // sendChat broadcasts a chat message over every open peer-to-peer data
+  // channel and immediately surfaces it to the local UI as a self message.
+  // Returns true if at least one peer received it (or there are no peers,
+  // i.e. the user is talking to themselves but the message still renders
+  // locally). Empty/whitespace-only bodies are dropped.
+  sendChat(body: string): boolean {
+    const trimmed = body.trim();
+    if (!trimmed || !this.localId) return false;
+    const ts = Date.now();
+    for (const peer of this.peers.values()) peer.sendChat(trimmed, ts);
+    this.cb.onChatMessage({
+      from: this.localId,
+      isSelf: true,
+      name: this.localName,
+      body: trimmed,
+      ts,
+    });
+    return true;
+  }
+
   leave(): void {
     this.leaving = true;
     try {
@@ -160,6 +200,7 @@ export class Room {
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
     this.iceRetried.clear();
+    this.names.clear();
     this.cipher = null;
     if (this.groupKeyRaw) this.groupKeyRaw.fill(0);
     this.groupKeyRaw = null;
@@ -224,6 +265,8 @@ export class Room {
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
     this.iceRetried.clear();
+    this.names.clear();
+    this.localName = "";
     this.stopSelfVAD?.();
     this.stopSelfVAD = null;
     this.signaling.close();
@@ -242,6 +285,8 @@ export class Room {
       case "room_created": {
         const { code, peerId, name, turn } = env.payload;
         this.localId = peerId;
+        this.localName = name;
+        this.names.set(peerId, name);
         this.code = code;
         this.iceServers = turnCredsToIceServers(turn ?? null);
         await this.becomeKeyOwner();
@@ -257,6 +302,8 @@ export class Room {
       case "room_joined": {
         const { code, peerId, name, peers, turn } = env.payload;
         this.localId = peerId;
+        this.localName = name;
+        this.names.set(peerId, name);
         this.code = code;
         this.iceServers = turnCredsToIceServers(turn ?? null);
         for (const info of peers) {
@@ -298,13 +345,17 @@ export class Room {
           p.close();
           this.peers.delete(peerId);
           this.iceRetried.delete(peerId);
-          this.cb.onPeerRemoved(peerId);
+          const name = this.names.get(peerId) ?? "";
+          this.names.delete(peerId);
+          this.cb.onPeerRemoved(peerId, name);
           playLeaveTone();
         }
         return;
       }
       case "peer_renamed": {
         const { peerId, name } = env.payload;
+        if (peerId === this.localId) this.localName = name;
+        this.names.set(peerId, name);
         this.cb.onPeerRenamed(peerId, name);
         return;
       }
@@ -355,11 +406,16 @@ export class Room {
         sendSignal: (data) => this.relaySignal(info.id, data),
         onTrack: (stream) => this.cb.onRemoteStream(info.id, stream),
         onConnectionChange: (state) => this.handleConnectionChange(info.id, state),
+        onChat: (body, ts) => {
+          const name = this.names.get(info.id) ?? info.name;
+          this.cb.onChatMessage({ from: info.id, isSelf: false, name, body, ts });
+        },
       },
     });
     peer.setLocalTrack(this.mic.outbound);
     if (this.cipher && useE2EE) peer.attachCipher(this.cipher);
     this.peers.set(info.id, peer);
+    this.names.set(info.id, info.name);
     this.cb.onPeerAdded(info.id, info.name);
     return peer;
   }
