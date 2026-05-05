@@ -191,7 +191,7 @@ button.ghost:hover { color: var(--fg); }
 
 .peer {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto auto;
+  grid-template-columns: auto 1fr auto auto auto auto auto;
   align-items: center;
   gap: 0.6rem;
   padding: 0.6rem 0.75rem;
@@ -261,8 +261,73 @@ button.ghost:hover { color: var(--fg); }
 
 .peer .vol { width: 6rem; }
 
+.peer .cipher {
+  font-size: 0.85rem;
+  color: var(--muted);
+  width: 1em;
+  text-align: center;
+}
+.peer .cipher.bad { color: var(--bad); }
+.peer .cipher:empty { display: none; }
+
 #room-status {
   margin-top: 1rem;
   text-align: center;
   font-size: 0.85rem;
+}
+
+.settings {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--card-border);
+}
+.settings > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  list-style: revert;
+  padding: 0.25rem 0;
+}
+.settings > summary:hover { color: var(--fg); }
+.settings[open] > summary { color: var(--fg); margin-bottom: 0.75rem; }
+
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.85rem;
+}
+.setting-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.setting > select {
+  width: 100%;
+  font: inherit;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  padding: 0.5rem 0.7rem;
+  background: var(--card);
+  color: var(--fg);
+}
+.setting.mic-test-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.setting.mic-test-row > button {
+  flex-shrink: 0;
+}
+.mic-meter {
+  flex: 1;
+  height: 6px;
+  background: var(--card-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mic-meter > #mic-meter-bar {
+  width: 0%;
+  height: 100%;
+  background: var(--good);
+  transition: width 60ms linear;
 }

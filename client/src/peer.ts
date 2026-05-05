@@ -13,7 +13,13 @@
 import type { GroupCipher } from "./e2ee.ts";
 import type { TurnCreds, SignalData } from "./wire.ts";
 
-const OPUS_BITRATE_BPS = 48_000;
+const OPUS_BITRATE_DEFAULT = 48_000;
+// SDP RED payload type. 63 is the de-facto value used by Chromium when it
+// negotiates RED for audio; we reuse it so peers that already understand
+// browser-side RED (Chrome 102+) interop without surprises. The munge is
+// strictly additive — if the remote doesn't accept RED, the standard offer/
+// answer renegotiation will still leave Opus working.
+const RED_PT = 63;
 
 export type PeerTransport = "direct" | "relayed";
 
@@ -21,6 +27,9 @@ export interface PeerStats {
   rttMs?: number;
   packetsLost?: number;
   packetsRecv?: number;
+  // lossRate is the inbound loss fraction on the last sampling window
+  // (0..1). NaN when no samples are available yet.
+  lossRate?: number;
   transport?: PeerTransport;
 }
 
@@ -53,6 +62,14 @@ export class Peer {
   private pendingReceivers: RTCRtpReceiver[] = [];
   // Buffer ICE candidates that arrived before remoteDescription is set.
   private pendingIce: RTCIceCandidateInit[] = [];
+  // Snapshot of last-seen inbound counts; used to compute a windowed loss
+  // rate without leaking cumulative-since-start values into the UI.
+  private lastLost = 0;
+  private lastRecv = 0;
+  // Bitrate currently applied on the outbound sender. We only call
+  // setParameters when the value actually changes — getParameters/setParameters
+  // round-trips are cheap but not free.
+  private currentBitrate = OPUS_BITRATE_DEFAULT;
 
   constructor(opts: {
     localId: string;
@@ -110,6 +127,47 @@ export class Peer {
     const stream = new MediaStream([track]);
     this.localSender = this.pc.addTrack(track, stream);
     this.tryWireSender();
+    // Apply the default bitrate immediately. setParameters can race the
+    // first negotiation on some builds, so we swallow errors and let the
+    // adaptive loop retry on the next stats tick.
+    this.applyBitrate(this.currentBitrate);
+    // Mark the audio sender as high-priority so DSCP markings (when the OS
+    // honors them) and browser-internal scheduling favor voice over any
+    // future data channels.
+    try {
+      const params = this.localSender.getParameters();
+      if (params.encodings && params.encodings[0]) {
+        const enc = params.encodings[0] as RTCRtpEncodingParameters & { networkPriority?: string };
+        enc.priority = "high";
+        enc.networkPriority = "high";
+        void this.localSender.setParameters(params);
+      }
+    } catch {
+      /* setParameters may not yet be ready; harmless */
+    }
+  }
+
+  // setBitrate updates the outbound encoder's maxBitrate. Caller picks the
+  // value based on observed loss/RTT.
+  setBitrate(bps: number): void {
+    if (bps === this.currentBitrate) return;
+    this.currentBitrate = bps;
+    this.applyBitrate(bps);
+  }
+
+  private applyBitrate(bps: number): void {
+    const sender = this.localSender;
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0]!.maxBitrate = bps;
+      void sender.setParameters(params).catch(() => {/* race with negotiation */});
+    } catch {
+      /* harmless; will retry on next tick */
+    }
   }
 
   // attachCipher installs the GroupCipher and wires any sender/receivers
@@ -139,7 +197,22 @@ export class Peer {
   // does nothing until handleSignal sees the offer.
   async start(): Promise<void> {
     if (!this.local.isOfferer) return;
-    const offer = await this.pc.createOffer();
+    await this.offer({});
+  }
+
+  // restartIce regenerates ICE candidates without rebuilding the PC. Only
+  // the offerer initiates; the answerer follows naturally via handleSignal.
+  async restartIce(): Promise<void> {
+    if (!this.local.isOfferer) return;
+    try {
+      await this.offer({ iceRestart: true });
+    } catch (err) {
+      console.warn("ICE restart failed", err);
+    }
+  }
+
+  private async offer(opts: { iceRestart?: boolean }): Promise<void> {
+    const offer = await this.pc.createOffer(opts);
     offer.sdp = munge(offer.sdp);
     await this.pc.setLocalDescription(offer);
     if (this.pc.localDescription) {
@@ -183,6 +256,8 @@ export class Peer {
     const stats = await this.pc.getStats();
     let localCandidateId: string | undefined;
     let remoteCandidateId: string | undefined;
+    let cumLost = 0;
+    let cumRecv = 0;
     stats.forEach((rep) => {
       if (rep.type === "candidate-pair" && rep.state === "succeeded" && rep.nominated) {
         if (typeof rep.currentRoundTripTime === "number") {
@@ -192,10 +267,24 @@ export class Peer {
         remoteCandidateId = rep.remoteCandidateId;
       }
       if (rep.type === "inbound-rtp" && rep.kind === "audio") {
-        out.packetsLost = rep.packetsLost;
-        out.packetsRecv = rep.packetsReceived;
+        if (typeof rep.packetsLost === "number") cumLost = rep.packetsLost;
+        if (typeof rep.packetsReceived === "number") cumRecv = rep.packetsReceived;
       }
     });
+    out.packetsLost = cumLost;
+    out.packetsRecv = cumRecv;
+    // Windowed loss rate: divide deltas since the last sample. The first
+    // sample after construction always reads the full cumulative count
+    // (lastLost/lastRecv default to 0), so we report NaN until the second
+    // sample to avoid spiking the indicator on join.
+    const dLost = cumLost - this.lastLost;
+    const dRecv = cumRecv - this.lastRecv;
+    const dTotal = dLost + dRecv;
+    if (this.lastRecv > 0 && dTotal > 0) {
+      out.lossRate = dLost / dTotal;
+    }
+    this.lastLost = cumLost;
+    this.lastRecv = cumRecv;
     // The selected pair tells us how the media is actually flowing. If either
     // side's candidate is "relay" the path goes through TURN; otherwise it's
     // a direct host/srflx/prflx pairing between the two browsers.
@@ -206,6 +295,10 @@ export class Peer {
       out.transport = relayed ? "relayed" : "direct";
     }
     return out;
+  }
+
+  connectionState(): RTCPeerConnectionState {
+    return this.pc.connectionState;
   }
 
   close(): void {
@@ -238,13 +331,19 @@ export function turnCredsToIceServers(creds: TurnCreds | null | undefined): RTCI
   return servers;
 }
 
-// munge tweaks the SDP to set Opus parameters per proposal § Codec/transport.
-// Anything we can't set via RTCRtpSender params (DTX, FEC, useinbandfec,
-// usedtx, application=voip-style hint) we set here. Best-effort: if the SDP
-// shape changes between browser versions we keep what we recognize.
+// munge tweaks the SDP per proposal § Codec/transport. We do two passes:
+//
+//   1. Append/replace Opus fmtp (DTX, FEC, bitrate cap).
+//   2. Insert a RED payload type that wraps Opus, ahead of Opus in the
+//      m=audio line, so the encoder negotiates RED redundancy. RFC 2198 RED
+//      gives us cheap recovery from single-packet loss bursts that Opus
+//      inband FEC alone can't always patch (FEC carries the previous frame
+//      at lower quality; RED carries one or more full prior payloads).
+//
+// Both passes are best-effort: if the SDP shape is unfamiliar (different
+// browser/version) we leave the input unchanged for that pass.
 function munge(sdp: string | undefined): string | undefined {
   if (!sdp) return sdp;
-  // Append (or set) Opus fmtp parameters.
   const lines = sdp.split("\r\n");
   let opusPt: string | null = null;
   for (const line of lines) {
@@ -255,9 +354,9 @@ function munge(sdp: string | undefined): string | undefined {
     }
   }
   if (!opusPt) return sdp;
-  const wantParams = `minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=${OPUS_BITRATE_BPS}`;
+  const wantParams = `minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=${OPUS_BITRATE_DEFAULT}`;
   let touched = false;
-  const out = lines.map((line) => {
+  let out = lines.map((line) => {
     if (line.startsWith(`a=fmtp:${opusPt} `)) {
       touched = true;
       return `a=fmtp:${opusPt} ${wantParams}`;
@@ -265,11 +364,48 @@ function munge(sdp: string | undefined): string | undefined {
     return line;
   });
   if (!touched) {
-    // Insert a fmtp line right after the rtpmap line for opus.
     const idx = out.findIndex((l) => l.startsWith(`a=rtpmap:${opusPt} opus/48000`));
     if (idx >= 0) {
       out.splice(idx + 1, 0, `a=fmtp:${opusPt} ${wantParams}`);
     }
   }
+
+  // Add RED in front of Opus for FEC redundancy. Skip if RED is already
+  // declared on a different PT or the RED_PT slot is taken — both mean the
+  // browser already negotiated something; don't fight it.
+  const redPtStr = String(RED_PT);
+  const hasOurRed = out.some((l) => l.startsWith(`a=rtpmap:${redPtStr} red/48000`));
+  const slotTaken = !hasOurRed && out.some((l) => l.startsWith(`a=rtpmap:${redPtStr} `));
+  const hasOtherRed = out.some((l) => /^a=rtpmap:\d+ red\/48000/i.test(l) && !l.startsWith(`a=rtpmap:${redPtStr} `));
+  if (!hasOurRed && !slotTaken && !hasOtherRed) {
+    const audioMIdx = out.findIndex((l) => l.startsWith("m=audio "));
+    const opusRtpIdx = out.findIndex((l) => l.startsWith(`a=rtpmap:${opusPt} opus/48000`));
+    if (audioMIdx >= 0 && opusRtpIdx >= 0) {
+      out = patchAudioMLine(out, audioMIdx, opusPt, redPtStr);
+      // Insert rtpmap + fmtp for RED right after the existing Opus rtpmap.
+      out.splice(opusRtpIdx + 1, 0, `a=rtpmap:${redPtStr} red/48000/2`);
+      out.splice(opusRtpIdx + 2, 0, `a=fmtp:${redPtStr} ${opusPt}/${opusPt}`);
+    }
+  }
+
   return out.join("\r\n");
+}
+
+// patchAudioMLine moves redPt to the front of the audio m-line's PT list
+// (right after the existing PTs in the leading fields), so the offerer
+// expresses preference for RED over raw Opus. We don't strip the Opus PT —
+// RED falls back to plain Opus if the remote doesn't accept it.
+function patchAudioMLine(lines: string[], idx: number, opusPt: string, redPt: string): string[] {
+  const m = lines[idx]!;
+  const parts = m.split(" ");
+  // m=audio <port> <proto> <pt1> <pt2> ...
+  if (parts.length < 4) return lines;
+  const head = parts.slice(0, 3);
+  const pts = parts.slice(3).filter((p) => p !== redPt);
+  const opusIdx = pts.indexOf(opusPt);
+  if (opusIdx < 0) return lines;
+  pts.splice(opusIdx, 0, redPt);
+  const next = [...lines];
+  next[idx] = [...head, ...pts].join(" ");
+  return next;
 }

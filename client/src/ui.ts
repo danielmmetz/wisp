@@ -1,6 +1,6 @@
 // DOM helpers for the lobby and room screens. Stays vanilla; no framework.
 
-import { attachRemoteStream, observeSpeaking } from "./audio.ts";
+import { attachRemoteStream, observeSpeaking, type AudioDevice } from "./audio.ts";
 import { MAX_NAME_LEN } from "./wire.ts";
 
 export interface PeerRowOptions {
@@ -23,6 +23,7 @@ export interface PeerRowHandle {
   setQuality: (q: "good" | "degraded" | "poor" | "unknown") => void;
   setTransport: (t: "direct" | "relayed" | "unknown") => void;
   setMuted: (m: boolean) => void;
+  setCipherHealth: (healthy: boolean) => void;
   attach: (stream: MediaStream) => void;
   destroy: () => void;
 }
@@ -72,6 +73,34 @@ export function shareLink(code: string): string {
   return u.toString();
 }
 
+// fillDeviceSelect populates a <select> with audio devices, preserving
+// the currently-selected ID where possible. "" maps to the system default,
+// which is rendered as a leading "(system default)" option.
+export function fillDeviceSelect(
+  sel: HTMLSelectElement,
+  devices: AudioDevice[],
+  selected: string,
+): void {
+  const prev = selected || sel.value || "";
+  sel.replaceChildren();
+  const dflt = document.createElement("option");
+  dflt.value = "";
+  dflt.textContent = "(system default)";
+  sel.appendChild(dflt);
+  for (const d of devices) {
+    const opt = document.createElement("option");
+    opt.value = d.deviceId;
+    opt.textContent = d.label;
+    sel.appendChild(opt);
+  }
+  // Restore selection if the device is still present; otherwise keep default.
+  if (devices.some((d) => d.deviceId === prev)) {
+    sel.value = prev;
+  } else {
+    sel.value = "";
+  }
+}
+
 export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
   const tpl = document.querySelector<HTMLTemplateElement>("#peer-row");
   if (!tpl) throw new Error("peer-row template missing");
@@ -79,6 +108,7 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
   const nameEl = node.querySelector<HTMLElement>(".name")!;
   const qualityEl = node.querySelector<HTMLElement>(".quality")!;
   const transportEl = node.querySelector<HTMLElement>(".transport")!;
+  const cipherEl = node.querySelector<HTMLElement>(".cipher")!;
   const volEl = node.querySelector<HTMLInputElement>(".vol")!;
   const muteBtn = node.querySelector<HTMLButtonElement>(".mute")!;
 
@@ -120,7 +150,23 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
       node.classList.toggle("muted", m);
       muteBtn.textContent = m ? "unmute" : "mute";
     },
+    setCipherHealth: (healthy) => {
+      if (healthy) {
+        cipherEl.textContent = "";
+        cipherEl.title = "";
+        cipherEl.classList.remove("bad");
+      } else {
+        cipherEl.textContent = "⚠";
+        cipherEl.title = "couldn't decrypt audio from this peer";
+        cipherEl.classList.add("bad");
+      }
+    },
     attach: (s) => {
+      // Close any prior playback / VAD so a re-attach (e.g. after the room
+      // reconnects and a fresh ontrack fires for the same peer) doesn't
+      // leak the previous audio element or analyser.
+      detachAudio?.();
+      stopVAD?.();
       const remote = attachRemoteStream(s);
       detachAudio = remote.close;
       setVolumeFn = remote.setVolume;
@@ -194,4 +240,51 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
 
 export function appendPeerRow(handle: PeerRowHandle): void {
   ($("#peers") as HTMLElement).appendChild(handle.el);
+}
+
+// MicLevelMeter draws a small bar that follows the live mic input, used in
+// the lobby so users can verify their selected mic before joining.
+export interface MicLevelMeter {
+  start: (track: MediaStreamTrack) => void;
+  stop: () => void;
+}
+export function createMicLevelMeter(barEl: HTMLElement): MicLevelMeter {
+  let stop: (() => void) | null = null;
+  return {
+    start: (track) => {
+      stop?.();
+      // Reuse observeSpeaking's analyser pipeline by attaching a separate
+      // raf loop; observeSpeaking only emits transitions, but we want a
+      // continuous level. Inline the analyser here for simplicity.
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(new MediaStream([track]));
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      let raf = 0;
+      const tick = () => {
+        analyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (const v of buf) sum += v * v;
+        const rms = Math.sqrt(sum / buf.length);
+        // Map -60dB..-10dB to 0..100%.
+        const db = 20 * Math.log10(rms || 1e-9);
+        const pct = Math.max(0, Math.min(1, (db + 60) / 50)) * 100;
+        barEl.style.width = `${pct}%`;
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+      stop = () => {
+        cancelAnimationFrame(raf);
+        source.disconnect();
+        void ctx.close();
+        barEl.style.width = "0%";
+      };
+    },
+    stop: () => {
+      stop?.();
+      stop = null;
+    },
+  };
 }

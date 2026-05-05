@@ -2,11 +2,19 @@
 // the DOM helpers in ui.ts. No framework, no router; the URL ?room= param
 // just pre-fills the join field and auto-submits.
 
-import { startMic } from "./audio.ts";
+import {
+  listAudioDevices,
+  preloadNoiseSuppression,
+  setOutputDevice,
+  startMic,
+  type AudioDevice,
+} from "./audio.ts";
 import { Room } from "./room.ts";
 import {
   $,
   appendPeerRow,
+  createMicLevelMeter,
+  fillDeviceSelect,
   makePeerRow,
   setLobbyError,
   setRoomStatus,
@@ -15,7 +23,8 @@ import {
   showRoom,
 } from "./ui.ts";
 import type { MicCapture } from "./audio.ts";
-import type { PeerRowHandle } from "./ui.ts";
+import type { PeerStats } from "./peer.ts";
+import type { PeerRowHandle, MicLevelMeter } from "./ui.ts";
 
 let room: Room | null = null;
 let mic: MicCapture | null = null;
@@ -23,14 +32,68 @@ const rows = new Map<string, PeerRowHandle>();
 let qualityTimer: number | null = null;
 let localId: string | null = null;
 
+// User audio preferences. Persisted in localStorage so a returning user
+// doesn't need to reselect their headset on every visit.
+const STORAGE_KEY = "wisp.audioPrefs";
+interface AudioPrefs {
+  inputDeviceId: string;
+  outputDeviceId: string;
+}
+function loadPrefs(): AudioPrefs {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<AudioPrefs>;
+      return {
+        inputDeviceId: parsed.inputDeviceId ?? "",
+        outputDeviceId: parsed.outputDeviceId ?? "",
+      };
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  return { inputDeviceId: "", outputDeviceId: "" };
+}
+function savePrefs(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    /* no-op; private mode etc. */
+  }
+}
+const prefs = loadPrefs();
+
+let levelMeter: MicLevelMeter | null = null;
+
 async function ensureMic(): Promise<MicCapture> {
-  if (!mic) mic = await startMic();
+  if (!mic) {
+    mic = await startMic({ deviceId: prefs.inputDeviceId });
+    if (prefs.outputDeviceId) void setOutputDevice(prefs.outputDeviceId);
+    // After permission is granted, device labels become readable; refresh the
+    // pickers so the user sees friendly names if they open settings later.
+    void refreshDevicePickers();
+  }
   return mic;
 }
 
 function releaseMic(): void {
   mic?.close();
   mic = null;
+  levelMeter?.stop();
+}
+
+async function refreshDevicePickers(): Promise<void> {
+  let devices: { inputs: AudioDevice[]; outputs: AudioDevice[] };
+  try {
+    devices = await listAudioDevices();
+  } catch (err) {
+    console.warn("enumerateDevices failed", err);
+    return;
+  }
+  const inSel = document.querySelector<HTMLSelectElement>("#mic-select");
+  const outSel = document.querySelector<HTMLSelectElement>("#speaker-select");
+  if (inSel) fillDeviceSelect(inSel, devices.inputs, prefs.inputDeviceId);
+  if (outSel) fillDeviceSelect(outSel, devices.outputs, prefs.outputDeviceId);
 }
 
 function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
@@ -98,6 +161,17 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
           break;
       }
     },
+    onCipherHealth: (id, healthy) => {
+      rows.get(id)?.setCipherHealth(healthy);
+    },
+    onReconnecting: (attempt) => {
+      setRoomStatus(`Reconnecting (attempt ${attempt})…`);
+      // Visually mark all peer rows as poor while the room is in limbo.
+      for (const r of rows.values()) r.setQuality("poor");
+    },
+    onReconnected: () => {
+      setRoomStatus("");
+    },
     onLeft: (reason) => {
       stopQualityPolling();
       for (const r of rows.values()) r.destroy();
@@ -124,7 +198,7 @@ function startQualityPolling(): void {
   stopQualityPolling();
   qualityTimer = window.setInterval(async () => {
     if (!room) return;
-    let stats;
+    let stats: Map<string, PeerStats>;
     try {
       stats = await room.peerStats();
     } catch (err) {
@@ -132,8 +206,12 @@ function startQualityPolling(): void {
       return;
     }
     for (const [id, s] of stats) {
-      rows.get(id)?.setTransport(s.transport ?? "unknown");
+      const row = rows.get(id);
+      if (!row) continue;
+      row.setTransport(s.transport ?? "unknown");
+      row.setQuality(qualityFromStats(s));
     }
+    room.applyAdaptiveBitrate(stats);
   }, 2000);
 }
 function stopQualityPolling(): void {
@@ -141,6 +219,18 @@ function stopQualityPolling(): void {
     window.clearInterval(qualityTimer);
     qualityTimer = null;
   }
+}
+
+// qualityFromStats maps inbound loss + RTT into the three-bucket UI. We
+// favor loss over RTT because perceived call quality drops fast with loss
+// (jitter buffer can paper over RTT, not over missing frames).
+function qualityFromStats(s: PeerStats): "good" | "degraded" | "poor" | "unknown" {
+  const loss = s.lossRate;
+  const rtt = s.rttMs;
+  if (typeof loss !== "number" || !Number.isFinite(loss)) return "unknown";
+  if (loss >= 0.05 || (rtt !== undefined && rtt > 400)) return "poor";
+  if (loss >= 0.02 || (rtt !== undefined && rtt > 200)) return "degraded";
+  return "good";
 }
 
 function readNameFromLobby(): string {
@@ -190,7 +280,77 @@ function leaveRoom(): void {
   room?.leave();
 }
 
+// initSettings wires the device pickers and the mic test button. Test mic
+// acquires getUserMedia, populates device labels, and runs a level meter
+// so the user can confirm their setup before joining.
+function initSettings(): void {
+  const inSel = document.querySelector<HTMLSelectElement>("#mic-select");
+  const outSel = document.querySelector<HTMLSelectElement>("#speaker-select");
+  const testBtn = document.querySelector<HTMLButtonElement>("#mic-test");
+  const meterBar = document.querySelector<HTMLElement>("#mic-meter-bar");
+
+  inSel?.addEventListener("change", () => {
+    prefs.inputDeviceId = inSel.value;
+    savePrefs();
+    if (mic) void switchInputDevice();
+  });
+
+  outSel?.addEventListener("change", () => {
+    prefs.outputDeviceId = outSel.value;
+    savePrefs();
+    void setOutputDevice(prefs.outputDeviceId);
+  });
+
+  if (testBtn && meterBar) {
+    levelMeter = createMicLevelMeter(meterBar);
+    let testActive = false;
+    testBtn.addEventListener("click", async () => {
+      if (testActive) {
+        levelMeter?.stop();
+        testActive = false;
+        testBtn.textContent = "test mic";
+        return;
+      }
+      try {
+        const m = await ensureMic();
+        levelMeter?.start(m.raw);
+        testActive = true;
+        testBtn.textContent = "stop test";
+      } catch (err) {
+        setLobbyError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+}
+
+async function switchInputDevice(): Promise<void> {
+  // Restart mic with the new device. We replace tracks on every existing
+  // peer so audio continues without renegotiation. Self-VAD continues to
+  // observe the (now-stopped) old raw track until the next room install,
+  // which is harmless — a stopped track simply emits no speech transitions.
+  const old = mic;
+  mic = null;
+  try {
+    const next = await startMic({ deviceId: prefs.inputDeviceId });
+    mic = next;
+    room?.setOutboundTrack(next.outbound);
+    old?.close();
+  } catch (err) {
+    console.error("switching mic failed", err);
+    mic = old;
+    setRoomStatus("Couldn't switch microphone");
+    setTimeout(() => setRoomStatus(""), 2000);
+  }
+}
+
 function init(): void {
+  // Begin fetching DFN3 assets immediately so they're cached by the time
+  // the user clicks Create/Join. The promise is reused inside startMic; if
+  // it's still pending when the user clicks, startMic awaits it once.
+  void preloadNoiseSuppression();
+
+  initSettings();
+
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.
   $("#create-form").addEventListener("submit", (ev) => {
@@ -208,6 +368,12 @@ function init(): void {
     if (!room) return;
     ev.preventDefault();
     leaveRoom();
+  });
+
+  // Listen for device changes (plug/unplug headphones) and refresh the
+  // pickers so the user sees the current device list.
+  navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+    void refreshDevicePickers();
   });
 
   // pagehide fires for refresh, tab close, and same-tab navigation. We stop

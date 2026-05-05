@@ -1,13 +1,24 @@
 // Room manages the local peer's mesh: signaling, per-remote-peer connections,
-// the group key, and the wiring between mic capture and outbound senders.
+// the group key, the wiring between mic capture and outbound senders, and
+// best-effort recovery from transient signaling/ICE failures.
 //
 // State machine:
 //   idle → connecting → in-room → leaving → idle
-// Reconnection is per-WebSocket: the underlying RTCPeerConnections survive
-// short signaling drops as long as ICE is healthy. v1 implements one
-// reconnect attempt with capped backoff before giving up.
+//
+// Failure handling:
+//   - On WebSocket close that wasn't user-initiated, redial with exponential
+//     backoff and rejoin the same code. Existing peers see a peer_left for
+//     our old peer ID and a peer_joined for the new one; their PCs get
+//     rebuilt. We tear ours down on the same trigger because the remote
+//     side has already disposed of them.
+//   - On a peer connection going `failed`, the offerer kicks one ICE restart.
+//     Two failures in a row are treated as terminal for that peer.
 
-import { observeSpeaking } from "./audio.ts";
+import {
+  observeSpeaking,
+  playJoinTone,
+  playLeaveTone,
+} from "./audio.ts";
 import {
   generateEphemeralKeypair,
   generateGroupKey,
@@ -21,6 +32,12 @@ import { SignalingClient, signalingURL } from "./signaling.ts";
 import type { MicCapture } from "./audio.ts";
 import type { ServerEnvelope, SignalData, TurnCreds, PeerInfo } from "./wire.ts";
 
+// Reconnect backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s. Cap at 30s and stop
+// after MAX_RECONNECT_ATTEMPTS attempts so we don't spin forever for a
+// truly-dead network.
+const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 16000, 30000];
+const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
+
 export interface RoomCallbacks {
   onJoined: (info: { code: string; localId: string; name: string }) => void;
   onPeerAdded: (id: string, name: string) => void;
@@ -29,8 +46,21 @@ export interface RoomCallbacks {
   onRemoteStream: (id: string, stream: MediaStream) => void;
   onSpeakingChange: (id: string, speaking: boolean) => void;
   onConnectionState: (id: string, state: RTCPeerConnectionState) => void;
+  // onCipherHealth fires when sustained decrypt failures cross a threshold
+  // (healthy=false) and again when decryption recovers (healthy=true).
+  onCipherHealth: (id: string, healthy: boolean) => void;
   onLeft: (reason: string) => void;
   onError: (msg: string) => void;
+  // onReconnecting/onReconnected let the UI surface "trying to reconnect..."
+  // without conflating it with a final disconnect.
+  onReconnecting: (attempt: number) => void;
+  onReconnected: () => void;
+}
+
+interface JoinIntent {
+  kind: "create" | "join";
+  code: string;
+  name: string;
 }
 
 export class Room {
@@ -39,12 +69,20 @@ export class Room {
   private signaling: SignalingClient;
   private keypair!: EphemeralKeypair;
   private peers = new Map<string, Peer>();
+  // iceRetried tracks per-peer ICE-restart attempts so we don't loop on a
+  // truly-dead path.
+  private iceRetried = new Set<string>();
   private localId: string | null = null;
   private code: string | null = null;
   private iceServers: RTCIceServer[] = [];
   private cipher: GroupCipher | null = null;
   private groupKeyRaw: Uint8Array | null = null;
   private stopSelfVAD: (() => void) | null = null;
+  // intent records what we did to enter the room so we can replay it on
+  // reconnect. Cleared by leave/teardown.
+  private intent: JoinIntent | null = null;
+  private leaving = false;
+  private reconnecting = false;
 
   constructor(mic: MicCapture, cb: RoomCallbacks) {
     this.mic = mic;
@@ -58,6 +96,7 @@ export class Room {
   // create dials the signaling server, generates keys, and asks for a new
   // room. The room creator generates the initial group key.
   async create(name: string): Promise<void> {
+    this.intent = { kind: "create", code: "", name };
     await this.dialAndHandshake(async () => {
       this.signaling.send({
         type: "create_room",
@@ -68,6 +107,7 @@ export class Room {
 
   // join dials the signaling server with an existing room code.
   async join(code: string, name: string): Promise<void> {
+    this.intent = { kind: "join", code, name };
     await this.dialAndHandshake(async () => {
       this.signaling.send({
         type: "join_room",
@@ -76,9 +116,8 @@ export class Room {
     });
   }
 
-  // rename sends a rename request; the server broadcasts peer_renamed back
-  // (including to this client) so all views advance from the same source.
   rename(name: string): void {
+    if (this.intent) this.intent.name = name;
     try {
       this.signaling.send({ type: "rename", payload: { name } });
     } catch (err) {
@@ -87,12 +126,19 @@ export class Room {
   }
 
   leave(): void {
+    this.leaving = true;
     try {
       this.signaling.send({ type: "leave_room", payload: {} });
     } catch {
       // socket may already be closed
     }
     this.teardown("user left");
+  }
+
+  // setOutboundTrack swaps the mic track on every existing peer. Used when
+  // the user changes input device or toggles noise suppression.
+  setOutboundTrack(track: MediaStreamTrack): void {
+    for (const p of this.peers.values()) p.setLocalTrack(track);
   }
 
   private async dialAndHandshake(send: () => Promise<void>): Promise<void> {
@@ -102,14 +148,82 @@ export class Room {
   }
 
   private onSignalingClosed(): void {
-    if (this.localId !== null) {
-      this.teardown("signaling closed");
+    if (this.leaving) return;
+    if (this.localId === null) {
+      // Closed before we ever joined — treat as a hard failure; nothing to
+      // recover from yet.
+      return;
     }
+    // Tear down peer connections immediately: the remote side has already
+    // dropped us (the server broadcast peer_left when our socket closed),
+    // so the existing PCs are dead either way. We'll rebuild on reconnect.
+    for (const p of this.peers.values()) p.close();
+    this.peers.clear();
+    this.iceRetried.clear();
+    this.cipher = null;
+    if (this.groupKeyRaw) this.groupKeyRaw.fill(0);
+    this.groupKeyRaw = null;
+    this.localId = null;
+    void this.attemptReconnect();
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    if (!this.intent) {
+      this.cb.onLeft("signaling closed");
+      return;
+    }
+    this.reconnecting = true;
+    for (let attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS; attempt++) {
+      this.cb.onReconnecting(attempt + 1);
+      await sleep(RECONNECT_DELAYS_MS[attempt]!);
+      if (this.leaving) return;
+      try {
+        // Re-key for the new session: a brand-new ephemeral X25519 pair so
+        // peers re-derive a fresh wrap channel for us.
+        this.keypair = await generateEphemeralKeypair();
+        await this.signaling.connect(signalingURL());
+        // On reconnect we always send `join_room` for the same code, even
+        // for the room creator: by the time we get back the room may have
+        // continued without us, so we should join whatever is there. If
+        // we were the only one in the room and the cooldown expired, the
+        // server will recreate the room from the same code (attachPeer's
+        // create-on-miss path).
+        const code = this.intent.kind === "create" && this.code ? this.code : this.intent.code;
+        if (!code) {
+          throw new Error("no code to rejoin");
+        }
+        this.signaling.send({
+          type: "join_room",
+          payload: {
+            code,
+            publicKey: this.keypair.publicKey,
+            supportsE2EE: isE2EEAvailable(),
+            name: this.intent.name,
+          },
+        });
+        // The first server event (room_created or room_joined) will clear
+        // `reconnecting` and call onReconnected. We return here; the rest
+        // is async via onServerEvent.
+        return;
+      } catch (err) {
+        console.warn("reconnect attempt failed", attempt + 1, err);
+        try {
+          this.signaling.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // Out of attempts — give up.
+    this.reconnecting = false;
+    this.cb.onLeft("reconnect failed");
+    this.intent = null;
   }
 
   private teardown(reason: string): void {
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
+    this.iceRetried.clear();
     this.stopSelfVAD?.();
     this.stopSelfVAD = null;
     this.signaling.close();
@@ -118,6 +232,8 @@ export class Room {
     this.cipher = null;
     this.localId = null;
     this.code = null;
+    this.intent = null;
+    this.reconnecting = false;
     this.cb.onLeft(reason);
   }
 
@@ -130,7 +246,12 @@ export class Room {
         this.iceServers = turnCredsToIceServers(turn ?? null);
         await this.becomeKeyOwner();
         this.installSelfVAD();
-        this.cb.onJoined({ code, localId: peerId, name });
+        if (this.reconnecting) {
+          this.reconnecting = false;
+          this.cb.onReconnected();
+        } else {
+          this.cb.onJoined({ code, localId: peerId, name });
+        }
         return;
       }
       case "room_joined": {
@@ -143,7 +264,12 @@ export class Room {
           if (p) void p.start().catch((err) => console.error("peer.start failed", err));
         }
         this.installSelfVAD();
-        this.cb.onJoined({ code, localId: peerId, name });
+        if (this.reconnecting) {
+          this.reconnecting = false;
+          this.cb.onReconnected();
+        } else {
+          this.cb.onJoined({ code, localId: peerId, name });
+        }
         // Existing peers will each send us the wrapped group key over signal.
         return;
       }
@@ -159,7 +285,10 @@ export class Room {
         if (peer && this.groupKeyRaw && supportsE2EE) {
           await this.sendKeyTo(peerId, publicKey);
         }
-        if (peer) void peer.start().catch((err) => console.error("peer.start failed", err));
+        if (peer) {
+          void peer.start().catch((err) => console.error("peer.start failed", err));
+          playJoinTone();
+        }
         return;
       }
       case "peer_left": {
@@ -168,7 +297,9 @@ export class Room {
         if (p) {
           p.close();
           this.peers.delete(peerId);
+          this.iceRetried.delete(peerId);
           this.cb.onPeerRemoved(peerId);
+          playLeaveTone();
         }
         return;
       }
@@ -223,7 +354,7 @@ export class Room {
       callbacks: {
         sendSignal: (data) => this.relaySignal(info.id, data),
         onTrack: (stream) => this.cb.onRemoteStream(info.id, stream),
-        onConnectionChange: (state) => this.cb.onConnectionState(info.id, state),
+        onConnectionChange: (state) => this.handleConnectionChange(info.id, state),
       },
     });
     peer.setLocalTrack(this.mic.outbound);
@@ -231,6 +362,21 @@ export class Room {
     this.peers.set(info.id, peer);
     this.cb.onPeerAdded(info.id, info.name);
     return peer;
+  }
+
+  private handleConnectionChange(peerId: string, state: RTCPeerConnectionState): void {
+    this.cb.onConnectionState(peerId, state);
+    if (state === "failed") {
+      const peer = this.peers.get(peerId);
+      if (!peer) return;
+      if (this.iceRetried.has(peerId)) {
+        // Already restarted once; let the UI show poor and wait for a
+        // server-driven peer_left or user action.
+        return;
+      }
+      this.iceRetried.add(peerId);
+      void peer.restartIce();
+    }
   }
 
   private relaySignal(to: string, data: SignalData): void {
@@ -250,7 +396,9 @@ export class Room {
       return;
     }
     this.groupKeyRaw = generateGroupKey();
-    this.cipher = await GroupCipher.forKey(this.groupKeyRaw);
+    this.cipher = await GroupCipher.forKey(this.groupKeyRaw, (id, healthy) =>
+      this.cb.onCipherHealth(id, healthy),
+    );
   }
 
   private async sendKeyTo(remoteId: string, remotePub: string): Promise<void> {
@@ -272,7 +420,9 @@ export class Room {
     try {
       const raw = await unwrapGroupKey(this.keypair, data.ephemeralPublicKey, data.iv, data.ciphertext);
       this.groupKeyRaw = raw;
-      this.cipher = await GroupCipher.forKey(raw);
+      this.cipher = await GroupCipher.forKey(raw, (id, healthy) =>
+        this.cb.onCipherHealth(id, healthy),
+      );
       // Re-attach cipher only to peers that announced support. Mixed-mode
       // pairs (one side without Insertable Streams) stay on DTLS-SRTP.
       for (const peer of this.peers.values()) {
@@ -290,6 +440,28 @@ export class Room {
     });
   }
 
+  // applyAdaptiveBitrate picks a per-peer Opus bitrate based on observed
+  // inbound loss. We pick the worst-performing inbound link and degrade
+  // outbound to match — we can't see the remote's outbound stats from here,
+  // but loss is usually symmetric on the choke point. Receivers degrading
+  // each other in lockstep is the failure mode to avoid; we damp by only
+  // dropping after sustained loss and recovering slowly.
+  applyAdaptiveBitrate(stats: Map<string, PeerStats>): void {
+    let worstLoss = 0;
+    for (const s of stats.values()) {
+      if (typeof s.lossRate === "number" && Number.isFinite(s.lossRate)) {
+        if (s.lossRate > worstLoss) worstLoss = s.lossRate;
+      }
+    }
+    let target = 64_000;
+    if (worstLoss >= 0.10) target = 24_000;
+    else if (worstLoss >= 0.05) target = 32_000;
+    else if (worstLoss >= 0.02) target = 48_000;
+    for (const p of this.peers.values()) {
+      p.setBitrate(target);
+    }
+  }
+
   async peerStats(): Promise<Map<string, PeerStats>> {
     const out = new Map<string, PeerStats>();
     const entries = await Promise.all(
@@ -298,4 +470,8 @@ export class Room {
     for (const [id, s] of entries) out.set(id, s);
     return out;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
 }

@@ -20,6 +20,16 @@
 // On other browsers DTLS-SRTP still encrypts everything between peers.
 
 const COUNTER_BYTES = 4;
+// Refuse to encrypt past this counter value to keep the (key, IV) space
+// safely unique. AES-GCM IV reuse is catastrophic, so we abort the pipe well
+// before wraparound rather than risk it. At 50 fps (20ms ptime) this is ~2.7
+// years, far past any realistic call.
+const COUNTER_LIMIT = 0xfffffff0;
+// Receiver thresholds for surfacing "this peer's audio isn't decrypting" to
+// the UI. We tolerate a brief burst at handshake (the sender's transform
+// installs a moment after frames begin flowing); a sustained failure run is
+// what we want to flag.
+const SUSTAINED_FAILURES = 50;
 
 interface RTCEncodedFrame {
   data: ArrayBuffer;
@@ -48,10 +58,14 @@ export function isE2EEAvailable(): boolean {
   );
 }
 
+// CipherFailureSink is invoked when a receiver sees sustained decrypt
+// failures. Wired by the room layer to surface a per-peer indicator.
+export type CipherFailureSink = (peerId: string, healthy: boolean) => void;
+
 // GroupCipher holds the imported AES-GCM key for a room. It's shared
 // across all senders/receivers in the local mesh.
 export class GroupCipher {
-  static async forKey(rawKey: Uint8Array): Promise<GroupCipher> {
+  static async forKey(rawKey: Uint8Array, onPeerHealth?: CipherFailureSink): Promise<GroupCipher> {
     if (rawKey.byteLength !== 32) {
       throw new Error(`group key must be 32 bytes, got ${rawKey.byteLength}`);
     }
@@ -62,10 +76,13 @@ export class GroupCipher {
       false,
       ["encrypt", "decrypt"],
     );
-    return new GroupCipher(aesKey);
+    return new GroupCipher(aesKey, onPeerHealth);
   }
 
-  private constructor(private aesKey: CryptoKey) {}
+  private constructor(
+    private aesKey: CryptoKey,
+    private onPeerHealth?: CipherFailureSink,
+  ) {}
 
   // wireSender plumbs encryption into a sender's encoded-frame stream
   // using the local peer's prefix. Pass localPeerId once at room-setup.
@@ -79,6 +96,12 @@ export class GroupCipher {
     readable
       .pipeThrough(new TransformStream<RTCEncodedFrame, RTCEncodedFrame>({
         transform: async (frame, ctrl) => {
+          if (counter >= COUNTER_LIMIT) {
+            // We must not encrypt with a wrapped counter; that would reuse
+            // an IV under the same key. Drop the frame and stop the pipe.
+            ctrl.error(new Error("e2ee counter exhausted; key rotation required"));
+            return;
+          }
           frame.data = await this.encrypt(frame.data, prefix, counter++);
           ctrl.enqueue(frame);
         },
@@ -93,25 +116,35 @@ export class GroupCipher {
     const r = receiver as RTCRtpReceiver & WithStreams;
     if (!r.createEncodedStreams) return;
     const prefix = peerIdPrefix(remotePeerId);
-    let ok = 0;
-    let failed = 0;
+    let consecutiveFails = 0;
+    let consecutiveOks = 0;
+    let unhealthy = false;
     const { readable, writable } = r.createEncodedStreams();
     readable
       .pipeThrough(new TransformStream<RTCEncodedFrame, RTCEncodedFrame>({
         transform: async (frame, ctrl) => {
           try {
             frame.data = await this.decrypt(frame.data, prefix);
-            ok++;
+            consecutiveFails = 0;
+            consecutiveOks++;
+            // Recover from "unhealthy" after a clean run — gives the UI a
+            // chance to clear the indicator if decryption resumes (e.g. key
+            // rotation handoff completes).
+            if (unhealthy && consecutiveOks > SUSTAINED_FAILURES) {
+              unhealthy = false;
+              this.onPeerHealth?.(remotePeerId, true);
+            }
             ctrl.enqueue(frame);
           } catch (err) {
-            // Drop frames we can't decrypt rather than tearing the pipe
-            // down. Briefly happens during the join handshake (sender
-            // hasn't installed its transform yet) and around eventual
-            // key-rotation boundaries; sustained failures indicate a
-            // real key-mismatch bug worth surfacing.
-            failed++;
-            if (failed === 1 || failed % 200 === 0) {
-              console.warn(`[e2ee] decrypt failed (peer=${remotePeerId}, ok=${ok}, failed=${failed})`, err);
+            // Drop frames we can't decrypt rather than tearing the pipe down.
+            // A brief run is normal at the join handshake (the sender's
+            // transform installs after the first few frames flow).
+            consecutiveOks = 0;
+            consecutiveFails++;
+            if (!unhealthy && consecutiveFails >= SUSTAINED_FAILURES) {
+              unhealthy = true;
+              console.warn(`[e2ee] sustained decrypt failure (peer=${remotePeerId})`, err);
+              this.onPeerHealth?.(remotePeerId, false);
             }
           }
         },

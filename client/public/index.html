@@ -41,6 +41,28 @@
                     <button type="submit">Join</button>
                 </form>
                 <p id="lobby-error" class="error" hidden></p>
+
+                <details id="audio-settings" class="settings">
+                    <summary>Audio settings</summary>
+                    <label class="setting">
+                        <span class="setting-label">Microphone</span>
+                        <select id="mic-select">
+                            <option value="">(system default)</option>
+                        </select>
+                    </label>
+                    <label class="setting">
+                        <span class="setting-label">Speaker</span>
+                        <select id="speaker-select">
+                            <option value="">(system default)</option>
+                        </select>
+                    </label>
+                    <div class="setting mic-test-row">
+                        <button id="mic-test" type="button" class="ghost">test mic</button>
+                        <div class="mic-meter" aria-hidden="true">
+                            <div id="mic-meter-bar"></div>
+                        </div>
+                    </div>
+                </details>
             </section>
 
             <section id="room" class="card" hidden>
@@ -68,6 +90,7 @@
                 <span class="indicator" aria-hidden="true"></span>
                 <span class="name"></span>
                 <span class="quality" title="connection quality"></span>
+                <span class="cipher" aria-hidden="true"></span>
                 <span class="transport" aria-hidden="true"></span>
                 <input type="range" min="0" max="200" value="100" class="vol" />
                 <button class="mute ghost">mute</button>
