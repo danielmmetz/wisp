@@ -229,15 +229,31 @@ func (s *Server) handleJoin(ctx context.Context, logger *slog.Logger, conn *webs
 
 	rm, existing, status := s.attachPeer(code, pc)
 	switch status {
-	case attachNotFound:
-		writeError(ctx, conn, wire.ErrRoomNotFound, "room not found")
-		return
 	case attachFull:
 		writeError(ctx, conn, wire.ErrRoomFull, "room is full")
+		return
+	case attachCapacity:
+		writeError(ctx, conn, wire.ErrCapacity, "server at capacity")
 		return
 	}
 
 	logger = logger.With(slog.String("room", code.String()), slog.String("peer", pc.id))
+
+	if status == attachCreated {
+		logger.InfoContext(ctx, "room created via join")
+		if err := writeJSON(ctx, conn, envelope(wire.TypeRoomCreated, wire.RoomCreatedPayload{
+			Code:   code.String(),
+			PeerID: pc.id,
+			Name:   pc.name,
+			TURN:   s.issueTURN(ctx, logger),
+		})); err != nil {
+			s.removePeer(rm, pc, logger)
+			return
+		}
+		s.runPeer(ctx, logger, rm, pc)
+		return
+	}
+
 	logger.InfoContext(ctx, "peer joined", slog.Int("peer_count", len(existing)+1))
 
 	if err := writeJSON(ctx, conn, envelope(wire.TypeRoomJoined, wire.RoomJoinedPayload{
@@ -412,37 +428,50 @@ func (s *Server) allocateRoom(creator *peerConn) (*room, wire.Code, error) {
 type attachStatus int
 
 const (
-	attachOK attachStatus = iota
-	attachNotFound
+	attachJoined attachStatus = iota
+	attachCreated
 	attachFull
+	attachCapacity
 )
 
-// attachPeer adds pc to the room with the given code. On success returns
-// the room and a snapshot of the existing peers (for the joiner's
-// room_joined message). The snapshot is taken under the lock and is safe
-// to read after release.
+// attachPeer joins pc to the room with the given code, creating the room
+// if it doesn't yet exist. The same atomic step under s.mu handles both
+// outcomes so concurrent joiners of a missing code converge cleanly:
+// whichever lock holder runs first creates, the rest join. On a join, the
+// returned slice snapshots the existing peers (for room_joined). On a
+// create, it is empty.
+//
+// Cooldowns are intentionally not checked here. Their job is to prevent
+// random allocation in allocateRoom from re-handing-out a freshly-freed
+// code; an explicit join means the user already has the code, so an
+// errant refresh or navigation can rebuild the room from the same link.
 func (s *Server) attachPeer(code wire.Code, pc *peerConn) (*room, []wire.PeerInfo, attachStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rm, ok := s.rooms[code.String()]
-	if !ok {
-		return nil, nil, attachNotFound
+	key := code.String()
+	if rm, ok := s.rooms[key]; ok {
+		if len(rm.peers) >= s.maxPeersPerRoom {
+			return nil, nil, attachFull
+		}
+		existing := make([]wire.PeerInfo, 0, len(rm.peers))
+		for _, p := range rm.peers {
+			existing = append(existing, wire.PeerInfo{
+				ID:           p.id,
+				PublicKey:    p.publicKey,
+				SupportsE2EE: p.supportsE2EE,
+				Name:         p.name,
+			})
+		}
+		rm.peers[pc.id] = pc
+		return rm, existing, attachJoined
 	}
-	if len(rm.peers) >= s.maxPeersPerRoom {
-		return nil, nil, attachFull
+	if s.maxRooms > 0 && len(s.rooms) >= s.maxRooms {
+		return nil, nil, attachCapacity
 	}
-	existing := make([]wire.PeerInfo, 0, len(rm.peers))
-	for _, p := range rm.peers {
-		existing = append(existing, wire.PeerInfo{
-			ID:           p.id,
-			PublicKey:    p.publicKey,
-			SupportsE2EE: p.supportsE2EE,
-			Name:         p.name,
-		})
-	}
-	rm.peers[pc.id] = pc
-	return rm, existing, attachOK
+	rm := &room{code: code, peers: map[string]*peerConn{pc.id: pc}}
+	s.rooms[key] = rm
+	return rm, nil, attachCreated
 }
 
 // peerInRoom returns the peer with id in rm or nil.

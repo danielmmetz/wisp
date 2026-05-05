@@ -132,7 +132,7 @@ func TestCreateRoom(t *testing.T) {
 	}
 }
 
-func TestJoinUnknownRoom(t *testing.T) {
+func TestJoinCreatesMissingRoom(t *testing.T) {
 	h := newHarness(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -140,12 +140,15 @@ func TestJoinUnknownRoom(t *testing.T) {
 	conn := h.dial(ctx, t)
 	sendJoin(t, ctx, conn, "velvet-otter", "PK_B")
 	env := readEnvelope(t, ctx, conn)
-	if env.Type != wire.TypeError {
-		t.Fatalf("type = %q want error", env.Type)
+	if env.Type != wire.TypeRoomCreated {
+		t.Fatalf("type = %q want %q", env.Type, wire.TypeRoomCreated)
 	}
-	got := mustPayload[wire.ErrorPayload](t, env)
-	if got.Code != wire.ErrRoomNotFound {
-		t.Fatalf("code = %q want %q", got.Code, wire.ErrRoomNotFound)
+	got := mustPayload[wire.RoomCreatedPayload](t, env)
+	if got.Code != "velvet-otter" {
+		t.Fatalf("code = %q want velvet-otter", got.Code)
+	}
+	if h.server.ActiveRooms() != 1 {
+		t.Fatalf("ActiveRooms = %d, want 1", h.server.ActiveRooms())
 	}
 }
 
@@ -348,7 +351,10 @@ func TestNamesPropagateAndRename(t *testing.T) {
 	}
 }
 
-func TestRoomEmptyClosesAndCooldown(t *testing.T) {
+func TestRoomEmptyClosesAndCanBeRejoined(t *testing.T) {
+	// Long cooldown ensures the freed code isn't simply gc'd and forgotten;
+	// the test is about whether an explicit join still works while the
+	// cooldown is active (it should — cooldown only blocks random allocation).
 	h := newHarness(t, signaling.WithCodeCooldown(time.Hour))
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -369,12 +375,17 @@ func TestRoomEmptyClosesAndCooldown(t *testing.T) {
 		t.Fatalf("ActiveRooms = %d, want 0", h.server.ActiveRooms())
 	}
 
-	// A second peer cannot rejoin the freed code: it doesn't exist.
+	// A peer with the original code can rebuild the room — useful when an
+	// errant refresh dropped everyone and they reconnect via the shared link.
 	b := h.dial(ctx, t)
 	sendJoin(t, ctx, b, created.Code, "PK_B")
 	env := readEnvelope(t, ctx, b)
-	if got := mustPayload[wire.ErrorPayload](t, env); got.Code != wire.ErrRoomNotFound {
-		t.Fatalf("code = %q want %q", got.Code, wire.ErrRoomNotFound)
+	if env.Type != wire.TypeRoomCreated {
+		t.Fatalf("type = %q want %q", env.Type, wire.TypeRoomCreated)
+	}
+	rejoined := mustPayload[wire.RoomCreatedPayload](t, env)
+	if rejoined.Code != created.Code {
+		t.Fatalf("code = %q want %q", rejoined.Code, created.Code)
 	}
 }
 

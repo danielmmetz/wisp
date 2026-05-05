@@ -36,12 +36,24 @@ export function $(sel: string): HTMLElement {
 export function showLobby(): void {
   ($("#lobby") as HTMLElement).hidden = false;
   ($("#room") as HTMLElement).hidden = true;
+  const u = new URL(location.href);
+  if (u.searchParams.has("room")) {
+    u.searchParams.delete("room");
+    history.replaceState(null, "", u.pathname + u.search);
+  }
 }
 
 export function showRoom(code: string): void {
   ($("#lobby") as HTMLElement).hidden = true;
   ($("#room") as HTMLElement).hidden = false;
   ($("#room-code") as HTMLElement).textContent = code;
+  // pushState so Back returns to the lobby. Skip when the URL already
+  // matches (initial load via ?room=, or re-entry from a popstate handler).
+  const u = new URL(location.href);
+  if (u.searchParams.get("room") !== code) {
+    u.searchParams.set("room", code);
+    history.pushState(null, "", u.pathname + u.search);
+  }
 }
 
 export function setLobbyError(msg: string | null): void {

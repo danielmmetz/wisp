@@ -28,6 +28,11 @@ async function ensureMic(): Promise<MicCapture> {
   return mic;
 }
 
+function releaseMic(): void {
+  mic?.close();
+  mic = null;
+}
+
 function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
   return {
     onJoined: ({ code, localId: id, name }) => {
@@ -99,6 +104,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.clear();
       remoteStreams.clear();
       localId = null;
+      releaseMic();
       showLobby();
       setLobbyError(reason === "user left" ? null : `Disconnected: ${reason}`);
       room = null;
@@ -106,6 +112,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
     onError: (msg) => {
       setLobbyError(msg);
       stopQualityPolling();
+      releaseMic();
       room = null;
     },
   };
@@ -186,7 +193,10 @@ function leaveRoom(): void {
 function init(): void {
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.
-  $("#create-btn").addEventListener("click", () => void startCreate());
+  $("#create-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    void startCreate();
+  });
   $("#join-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const code = (($("#join-code") as HTMLInputElement).value ?? "").trim();
@@ -194,6 +204,31 @@ function init(): void {
   });
   $("#leave-btn").addEventListener("click", leaveRoom);
   $("#copy-link").addEventListener("click", () => void copyLink());
+  $("#brand").addEventListener("click", (ev) => {
+    if (!room) return;
+    ev.preventDefault();
+    leaveRoom();
+  });
+
+  // pagehide fires for refresh, tab close, and same-tab navigation. We stop
+  // the mic explicitly so the OS recording indicator clears immediately
+  // rather than waiting for the browser to garbage-collect the page.
+  window.addEventListener("pagehide", () => {
+    room?.leave();
+    releaseMic();
+  });
+
+  // Sync room membership with the URL on Back/Forward. The URL has already
+  // changed by the time popstate fires; we just align state to match.
+  window.addEventListener("popstate", () => {
+    const target = new URL(location.href).searchParams.get("room");
+    if (target && target !== currentRoomCode()) {
+      ($("#join-code") as HTMLInputElement).value = target;
+      void startJoin(target);
+    } else if (!target && room) {
+      leaveRoom();
+    }
+  });
 
   // Pre-fill from ?room= and auto-join. If join fails, the lobby stays
   // visible with the code already filled in so the user can retry.
@@ -203,6 +238,11 @@ function init(): void {
     ($("#join-code") as HTMLInputElement).value = preset;
     void startJoin(preset);
   }
+}
+
+function currentRoomCode(): string | null {
+  if (!room) return null;
+  return ($("#room-code") as HTMLElement).textContent || null;
 }
 
 init();

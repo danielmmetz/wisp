@@ -9,32 +9,31 @@
         <link rel="icon" href="data:," />
     </head>
     <body>
+        <header class="site-header">
+            <a id="brand" href="/" class="brand">wisp</a>
+            <p class="tagline">privacy conscious chat</p>
+        </header>
         <main id="root">
             <section id="lobby" class="card">
-                <h1>wisp</h1>
-                <p class="lede">Privacy conscious chat.</p>
-                <label class="field">
-                    <span class="field-label">Your name</span>
+                <form id="create-form" class="row">
                     <input
                         id="name-input"
                         name="name"
-                        placeholder="otter"
+                        placeholder="your name"
                         autocomplete="off"
                         spellcheck="false"
                         maxlength="32"
                     />
-                </label>
-                <div class="row">
-                    <button id="create-btn" class="primary">
-                        Start a new room
+                    <button id="create-btn" type="submit" class="primary">
+                        Create Room
                     </button>
-                </div>
+                </form>
                 <div class="divider"><span>or</span></div>
                 <form id="join-form" class="row">
                     <input
                         id="join-code"
                         name="code"
-                        placeholder="velvet-otter"
+                        placeholder="room-code"
                         autocomplete="off"
                         spellcheck="false"
                         required
