@@ -621,6 +621,26 @@ input.name-edit {
 .msg .head-line .who {
   font-weight: 600;
   margin-right: 0.4em;
+  color: var(--who, var(--fg));
+}
+/* Per-author color slots. The slot is picked deterministically from the
+ * peer ID so a given person stays the same color for the whole session.
+ * Tuned for legibility on --card in each theme. */
+.who-c0 { --who: #b91c1c; }
+.who-c1 { --who: #b45309; }
+.who-c2 { --who: #15803d; }
+.who-c3 { --who: #0f766e; }
+.who-c4 { --who: #1d4ed8; }
+.who-c5 { --who: #6d28d9; }
+.who-c6 { --who: #be185d; }
+@media (prefers-color-scheme: dark) {
+  .who-c0 { --who: #f87171; }
+  .who-c1 { --who: #fbbf24; }
+  .who-c2 { --who: #4ade80; }
+  .who-c3 { --who: #5eead4; }
+  .who-c4 { --who: #93c5fd; }
+  .who-c5 { --who: #c4b5fd; }
+  .who-c6 { --who: #f9a8d4; }
 }
 /* pre-wrap on the body preserves user-entered runs of spaces and newlines.
  * Keep it scoped to .body — pre-wrap on .head-line would render the

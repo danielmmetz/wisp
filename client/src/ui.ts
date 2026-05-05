@@ -398,10 +398,29 @@ export function appendChatMessage(opts: {
   if (!tpl) throw new Error("chat-message template missing");
   const node = tpl.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
   node.dataset.from = opts.from;
-  node.querySelector<HTMLElement>(".who")!.textContent = opts.name;
+  const who = node.querySelector<HTMLElement>(".who")!;
+  who.textContent = opts.name;
+  who.classList.add(`who-c${authorColorIndex(opts.from)}`);
   node.querySelector<HTMLElement>(".time")!.textContent = formatTime(opts.ts);
   node.querySelector<HTMLElement>(".body")!.textContent = opts.body;
   appendChatNode(node);
+}
+
+// Number of color slots defined in CSS (.who-c0 ... .who-cN-1). Keep in
+// sync with style.css.
+const AUTHOR_COLOR_SLOTS = 7;
+
+// authorColorIndex maps a peer ID to a stable slot in [0, AUTHOR_COLOR_SLOTS).
+// FNV-1a over the UTF-16 code units — collisions in a small room are
+// possible but tolerable; the goal is "different from your neighbor",
+// not a unique color per person.
+function authorColorIndex(from: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < from.length; i++) {
+    h ^= from.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) % AUTHOR_COLOR_SLOTS;
 }
 
 // renameChatAuthor rewrites the displayed name on every existing chat
