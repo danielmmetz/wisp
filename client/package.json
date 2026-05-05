@@ -9,5 +9,8 @@
   "devDependencies": {
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "deepfilternet3-noise-filter": "^1.2.1"
   }
 }

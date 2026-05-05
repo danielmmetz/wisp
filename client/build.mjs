@@ -20,6 +20,13 @@ async function copyStatic() {
   for (const name of ["index.html", "style.css"]) {
     await cp(path.join(__dirname, "public", name), path.join(outDir, name));
   }
+  // DeepFilterNet3 assets — fetched at runtime by the package's AssetLoader,
+  // which expects {cdnUrl}/v2/pkg/df_bg.wasm and
+  // {cdnUrl}/v2/models/DeepFilterNet3_onnx.tar.gz. We vendor them under
+  // public/dfn/ and serve from the same origin.
+  await cp(path.join(__dirname, "public/dfn"), path.join(outDir, "dfn"), {
+    recursive: true,
+  });
 }
 
 const buildOpts = {

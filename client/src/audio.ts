@@ -1,9 +1,25 @@
-// Microphone capture for RTCPeerConnection.
+// Microphone capture and the audio graph that feeds RTCPeerConnection.
 //
-// The browser's AEC/NS/AGC handle the bulk of the work; the outbound track is
-// the raw mic track. setMuted toggles the track's enabled flag (transmit mute).
+// Path:
+//   getUserMedia → MediaStreamSource → DeepFilterNet3 worklet (optional)
+//                → MediaStreamDestination → outbound MediaStreamTrack
+//
+// The browser's AEC/NS/AGC handle the easy stuff. DeepFilterNet3 layers on top
+// for non-stationary noise (typing, dogs, kids) where the browser's NS gives
+// up. Assets (~17MB combined) are vendored under /dfn/v2/ and served by the
+// Go binary; first call pays a one-time fetch then the browser caches them.
+// If init fails for any reason, we fall back to passing the raw mic track —
+// the call still works.
+import { DeepFilterNet3Core } from "deepfilternet3-noise-filter";
 
 const SAMPLE_RATE = 48000;
+// Path-prefix for the vendored DFN3 assets (df_bg.wasm + DeepFilterNet3_onnx.tar.gz).
+// The package's AssetLoader appends "/v2/pkg/df_bg.wasm" and
+// "/v2/models/DeepFilterNet3_onnx.tar.gz".
+const DFN_ASSET_BASE = "/dfn";
+// Suppression strength, 0-100. 50 is the package default and a reasonable
+// middle ground; raise for noisier environments.
+const DFN_SUPPRESSION_LEVEL = 50;
 
 export interface MicCapture {
   // outbound is the MediaStreamTrack to addTrack onto each RTCPeerConnection.
@@ -12,7 +28,7 @@ export interface MicCapture {
   raw: MediaStreamTrack;
   // setMuted toggles the outbound track's enabled flag (transmit mute).
   setMuted: (muted: boolean) => void;
-  // close releases the mic.
+  // close releases the mic and tears down the audio graph.
   close: () => void;
 }
 
@@ -27,17 +43,51 @@ export async function startMic(): Promise<MicCapture> {
     },
     video: false,
   });
-  const track = stream.getAudioTracks()[0];
-  if (!track) throw new Error("no audio track from getUserMedia");
+  const rawTrack = stream.getAudioTracks()[0];
+  if (!rawTrack) throw new Error("no audio track from getUserMedia");
+
+  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const source = ctx.createMediaStreamSource(stream);
+  const dest = ctx.createMediaStreamDestination();
+
+  let cleanup: (() => void) | null = null;
+
+  // DFN3 noise suppression. If the WASM/model fetch or compile fails we
+  // connect source → dest directly; the call still works on the browser's
+  // built-in NS alone.
+  try {
+    const dfn = new DeepFilterNet3Core({
+      sampleRate: SAMPLE_RATE,
+      noiseReductionLevel: DFN_SUPPRESSION_LEVEL,
+      assetConfig: { cdnUrl: DFN_ASSET_BASE },
+    });
+    await dfn.initialize();
+    const node = await dfn.createAudioWorkletNode(ctx);
+    source.connect(node).connect(dest);
+    cleanup = () => {
+      node.disconnect();
+      source.disconnect();
+      dfn.destroy();
+    };
+  } catch (err) {
+    console.warn("DeepFilterNet3 unavailable; using raw mic", err);
+    source.connect(dest);
+    cleanup = () => source.disconnect();
+  }
+
+  const outboundTrack = dest.stream.getAudioTracks()[0];
+  if (!outboundTrack) throw new Error("destination produced no output track");
 
   return {
-    outbound: track,
-    raw: track,
+    outbound: outboundTrack,
+    raw: rawTrack,
     setMuted: (muted) => {
-      track.enabled = !muted;
+      outboundTrack.enabled = !muted;
     },
     close: () => {
+      cleanup?.();
       stream.getTracks().forEach((t) => t.stop());
+      void ctx.close();
     },
   };
 }
