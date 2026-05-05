@@ -6,9 +6,18 @@
 //   getUserMedia → MediaStreamSource → DFN3 worklet → MediaStreamDestination
 //                                                   → outbound MediaStreamTrack
 //
-// NS is on by default. ?nons=1 in the URL skips the worklet and sends the
-// raw getUserMedia track instead — useful only for isolating an echo
-// complaint from the noise suppression layer in a one-off debug session.
+// When DFN3 is in use we ask getUserMedia for a clean stream — browser-level
+// noiseSuppression and autoGainControl are disabled. Stacking the browser's
+// spectral NS + AGC under DFN3's neural model produced robotic-sounding voice:
+// AGC kept retargeting the level under DFN3's feet, and two NS layers ate
+// into voice components. Echo cancellation stays on; it needs the OS speaker
+// reference signal that we can't supply from WebAudio. If DFN3 fails to load
+// we fall back to a stream with browser NS+AGC on so the call still sounds
+// reasonable without it.
+//
+// ?nons=1 in the URL skips the worklet and uses the browser's NS+AGC chain
+// only — useful for isolating an echo complaint from the DFN3 layer in a
+// one-off debug session.
 import { DeepFilterNet3Core } from "deepfilternet3-noise-filter";
 
 const SAMPLE_RATE = 48000;
@@ -73,11 +82,17 @@ function noNS(): boolean {
 }
 
 export async function startMic(opts: MicOptions = {}): Promise<MicCapture> {
+  // Resolve DFN3 readiness before getUserMedia so we can pick the right
+  // browser-side processing. preloadNoiseSuppression memoizes — this awaits
+  // the same in-flight promise that main.ts kicked off at page load.
+  const dfn = noNS() ? null : await preloadNoiseSuppression();
+  const useDfn = dfn !== null;
+
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      noiseSuppression: !useDfn,
+      autoGainControl: !useDfn,
       channelCount: 1,
       sampleRate: SAMPLE_RATE,
       ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
@@ -90,8 +105,8 @@ export async function startMic(opts: MicOptions = {}): Promise<MicCapture> {
   let teardown: (() => void) | null = null;
   let outboundTrack: MediaStreamTrack = rawTrack;
 
-  if (!noNS()) {
-    const built = await buildNS(ctx(), stream);
+  if (useDfn) {
+    const built = await buildNS(ctx(), stream, dfn);
     if (built) {
       outboundTrack = built.track;
       teardown = built.close;
@@ -115,15 +130,14 @@ export async function startMic(opts: MicOptions = {}): Promise<MicCapture> {
 }
 
 // buildNS attaches the DFN3 worklet to the mic stream and returns the
-// processed track plus a teardown. Falls back (returns null) if DFN3 isn't
-// ready or fails to instantiate; caller should send the raw track instead.
+// processed track plus a teardown. Falls back (returns null) if the worklet
+// fails to instantiate; caller should send the raw track instead.
 async function buildNS(
   audioCtx: AudioContext,
   stream: MediaStream,
+  dfn: DeepFilterNet3Core,
 ): Promise<{ track: MediaStreamTrack; close: () => void } | null> {
   try {
-    const dfn = await preloadNoiseSuppression();
-    if (!dfn) return null;
     const node = await dfn.createAudioWorkletNode(audioCtx);
     const source = audioCtx.createMediaStreamSource(stream);
     const dest = audioCtx.createMediaStreamDestination();
