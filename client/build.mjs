@@ -17,7 +17,7 @@ const watch = process.argv.includes("--watch");
 
 async function copyStatic() {
   await mkdir(outDir, { recursive: true });
-  for (const name of ["index.html", "style.css"]) {
+  for (const name of ["index.html", "style.css", "favicon.svg"]) {
     await cp(path.join(__dirname, "public", name), path.join(outDir, name));
   }
   // DeepFilterNet3 assets — fetched at runtime by the package's AssetLoader,

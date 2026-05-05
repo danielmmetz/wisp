@@ -3,6 +3,7 @@
 // just pre-fills the join field and auto-submits.
 
 import {
+  attachRemoteStream,
   listAudioDevices,
   preloadNoiseSuppression,
   setOutputDevice,
@@ -10,14 +11,17 @@ import {
   type AudioDevice,
 } from "./audio.ts";
 import { Room } from "./room.ts";
+import { isDisplayMediaSupported } from "./screen.ts";
 import {
   $,
   appendChatMessage,
   appendChatSystem,
   appendPeerRow,
+  bindScreenShareButton,
   bindSelfBlock,
   clearChat,
   createMicLevelMeter,
+  createPresenterView,
   fillDeviceSelect,
   makePeerRow,
   renameChatAuthor,
@@ -30,7 +34,13 @@ import {
 } from "./ui.ts";
 import type { MicCapture } from "./audio.ts";
 import type { PeerStats } from "./peer.ts";
-import type { PeerRowHandle, MicLevelMeter, SelfBlockHandle } from "./ui.ts";
+import type {
+  PeerRowHandle,
+  MicLevelMeter,
+  PresenterView,
+  ScreenShareButton,
+  SelfBlockHandle,
+} from "./ui.ts";
 
 let room: Room | null = null;
 let mic: MicCapture | null = null;
@@ -38,6 +48,13 @@ const rows = new Map<string, PeerRowHandle>();
 let selfBlock: SelfBlockHandle | null = null;
 let qualityTimer: number | null = null;
 let localId: string | null = null;
+let presenterView: PresenterView | null = null;
+let screenShareBtn: ScreenShareButton | null = null;
+// Remote screen-audio playback. Routed through attachRemoteStream so it
+// goes through the shared AudioContext (which honors the user's selected
+// output device via setSinkId). Self-presenters skip this to avoid echo.
+// setVolume(0) gives an independent mute from the presenter's voice.
+let remoteScreenAudio: { close: () => void; setVolume: (v: number) => void } | null = null;
 
 // User audio preferences. Persisted in localStorage so a returning user
 // doesn't need to reselect their headset on every visit.
@@ -127,6 +144,9 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       selfBlock.setQuality("good");
       refreshPeerCount();
       startQualityPolling();
+      // Reveal the share button only when the browser actually supports
+      // getDisplayMedia (desktop, mostly) and we're inside a room.
+      if (isDisplayMediaSupported()) screenShareBtn?.setVisible(true);
     },
     onPeerAdded: (id, name) => {
       if (rows.has(id)) return;
@@ -199,12 +219,44 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
         ts: msg.ts,
       });
     },
+    onPresenterChanged: (peerId, stream) => {
+      // The pane never auto-opens; the rail indicator is the entry point.
+      // Here we just record who's presenting (which drives the indicator
+      // and refreshes any open pane content), and route remote audio
+      // through the shared AudioContext.
+      if (!peerId) {
+        presenterView?.setActive(null);
+        remoteScreenAudio?.close();
+        remoteScreenAudio = null;
+        screenShareBtn?.setSharing(false);
+        return;
+      }
+      const isSelf = peerId === localId;
+      // Sharing state on the header button is purely "are *we* sharing".
+      // Remote presenters don't gate the button — clicking starts a
+      // takeover that replaces them.
+      screenShareBtn?.setSharing(isSelf);
+      const name = isSelf
+        ? "you"
+        : (rows.get(peerId)?.el.querySelector<HTMLElement>(".nm")?.textContent ?? "screen share");
+      presenterView?.setActive({ name, stream, isSelf });
+      // Audio routing: only attach when we have an actual stream and the
+      // presenter is remote. Self skips to avoid echo. Re-attach when a
+      // takeover swaps presenters mid-stream and reset the mute toggle —
+      // the PresenterView resets its own visual state on presenter change
+      // for the same reason.
+      remoteScreenAudio?.close();
+      remoteScreenAudio = stream && !isSelf ? attachRemoteStream(stream) : null;
+    },
     onReconnecting: (attempt) => {
       setRoomStatus(`Reconnecting (attempt ${attempt})…`);
       // Visually mark all peer rows as poor while the room is in limbo.
       for (const r of rows.values()) r.setQuality("poor");
     },
-    onReconnected: () => {
+    onReconnected: ({ localId: id }) => {
+      // Server hands out a fresh peer ID on every join — refresh ours so
+      // isSelf checks (e.g. presenter recognition) keep working.
+      localId = id;
       setRoomStatus("");
     },
     onLeft: (reason) => {
@@ -218,6 +270,12 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       localId = null;
       setPeerCount(0);
       setRoomStatus("");
+      presenterView?.setActive(null);
+      presenterView?.setOpen(false);
+      remoteScreenAudio?.close();
+      remoteScreenAudio = null;
+      screenShareBtn?.setSharing(false);
+      screenShareBtn?.setVisible(false);
       releaseMic();
       showLobby();
       setLobbyError(reason === "user left" ? null : `Disconnected: ${reason}`);
@@ -480,6 +538,44 @@ function initAudioPopover(): void {
   });
 }
 
+// initScreenShare wires the header share button and the presenter pane.
+// The button stays hidden until a Room is active (set in onJoined). The
+// pane is created once and reused across rooms — its active/open state
+// is driven by onPresenterChanged and the rail indicator click.
+function initScreenShare(): void {
+  presenterView = createPresenterView({
+    onStopShare: () => {
+      room?.stopShare();
+    },
+    onClose: () => {
+      // The user dismissed the pane; the share itself keeps running and
+      // the rail indicator stays so they can reopen it.
+    },
+    onAudioVolumeChange: (volume) => {
+      // Independent of the per-peer mic mute. Volume is a linear gain
+      // factor (0 = silent, 1 = unity, 2 = +6 dB boost) applied to the
+      // AudioContext gain node attachRemoteStream installed.
+      remoteScreenAudio?.setVolume(volume);
+    },
+  });
+  screenShareBtn = bindScreenShareButton({
+    onPick: (mode) => {
+      if (!room) return;
+      void room.startShare(mode).catch((err) => {
+        console.error("startShare failed", err);
+        setRoomStatus("Couldn't start sharing");
+        setTimeout(() => setRoomStatus(""), 2500);
+      });
+    },
+    onStop: () => {
+      room?.stopShare();
+    },
+  });
+  // Hidden by default; onJoined will reveal it when the browser supports
+  // getDisplayMedia. iOS Safari users never see it.
+  screenShareBtn.setVisible(false);
+}
+
 async function switchInputDevice(): Promise<void> {
   // Restart mic with the new device. We replace tracks on every existing
   // peer so audio continues without renegotiation. Self-VAD continues to
@@ -509,6 +605,7 @@ function init(): void {
   initSettings();
   initAudioPopover();
   initRoomTabs();
+  initScreenShare();
 
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.

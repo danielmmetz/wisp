@@ -467,6 +467,278 @@ function appendChatNode(node: HTMLLIElement): void {
   if (stick) list.scrollTop = list.scrollHeight;
 }
 
+// PresenterView controls the screen-share viewer plus the rail indicator
+// that opens it. Two states are tracked independently:
+//
+//   - Active: there is a presenter (someone, possibly us). The rail
+//     indicator shows their name; clicking it opens the pane.
+//   - Open: the pane is rendering the stream. The chat column collapses.
+//
+// Pane open/close is user-driven (via the indicator and the close button).
+// The pane never auto-opens on a new presenter — the indicator is the
+// single entry point so a remote share never takes over the chat by
+// surprise.
+export interface PresenterInfo {
+  name: string;
+  stream: MediaStream | null;
+  isSelf: boolean;
+}
+export interface PresenterView {
+  // setActive records who the current presenter is (or null when nobody).
+  // The indicator visibility and label follow from this; the pane updates
+  // its content when open. Passing stream:null keeps the indicator visible
+  // but the pane will render nothing until the stream arrives.
+  setActive: (info: PresenterInfo | null) => void;
+  // setOpen toggles the pane on/off. Independent of setActive — the pane
+  // can be closed while a presenter is still active (indicator stays).
+  setOpen: (open: boolean) => void;
+  isOpen: () => boolean;
+}
+export function createPresenterView(opts: {
+  onStopShare: () => void;
+  onClose: () => void;
+  // onAudioVolumeChange fires when the user moves the volume slider or
+  // toggles the mute icon in the overlay. The value is a linear gain
+  // factor in [0, 2] (0 = silent, 1 = unity, 2 = +6 dB boost). The view
+  // tracks the value internally for icon state; the caller is responsible
+  // for the actual playback gating (typically setVolume on the
+  // AudioContext-routed audio handle).
+  onAudioVolumeChange: (volume: number) => void;
+}): PresenterView {
+  const pane = document.querySelector<HTMLElement>("#presenter-pane");
+  const video = document.querySelector<HTMLVideoElement>("#presenter-video");
+  const stopBtn = document.querySelector<HTMLButtonElement>("#presenter-stop");
+  const closeBtn = document.querySelector<HTMLButtonElement>("#presenter-close");
+  const fsBtn = document.querySelector<HTMLButtonElement>("#presenter-fullscreen");
+  const audioGroup = document.querySelector<HTMLElement>("#presenter-audio");
+  const muteBtn = document.querySelector<HTMLButtonElement>("#presenter-audio-mute");
+  const volSlider = document.querySelector<HTMLInputElement>("#presenter-audio-vol");
+  const indicator = document.querySelector<HTMLButtonElement>("#presenter-indicator");
+  const indicatorName = document.querySelector<HTMLElement>("#presenter-indicator-name");
+  if (!pane || !video || !stopBtn || !closeBtn || !fsBtn || !audioGroup || !muteBtn || !volSlider || !indicator || !indicatorName) {
+    throw new Error("presenter UI elements missing");
+  }
+
+  let active: PresenterInfo | null = null;
+  let open = false;
+  // volume is the current gain factor in [0, 2]. lastNonZero remembers
+  // the level before the user muted, so unmuting via the icon restores
+  // it instead of jumping back to 1.0.
+  let volume = 1;
+  let lastNonZero = 1;
+  // Per-stream listeners for addtrack/removetrack so the volume cluster
+  // reflects whether the active stream actually carries audio. When a
+  // stream is replaced (or cleared), we detach these.
+  let detachStreamListeners: (() => void) | null = null;
+
+  const refreshAudioVisibility = () => {
+    // The volume control only makes sense for remote streams that carry
+    // audio. Self-preview never plays remote audio (we don't pipe our
+    // own captured screen audio back) so the cluster stays hidden then.
+    const hasAudio = !!active?.stream && active.stream.getAudioTracks().length > 0;
+    const show = hasAudio && !!active && !active.isSelf;
+    audioGroup.hidden = !show;
+  };
+
+  const applyVolume = (v: number, source: "icon" | "slider" | "reset") => {
+    volume = Math.max(0, Math.min(2, v));
+    if (volume > 0) lastNonZero = volume;
+    const muted = volume === 0;
+    muteBtn.classList.toggle("is-muted", muted);
+    muteBtn.title = muted ? "Unmute screen audio" : "Mute screen audio";
+    muteBtn.setAttribute("aria-label", muteBtn.title);
+    // Avoid a feedback loop when the slider's own input event triggered
+    // this — its value already reflects the new state.
+    if (source !== "slider") volSlider.value = String(Math.round(volume * 100));
+    if (source !== "reset") opts.onAudioVolumeChange(volume);
+  };
+
+  const watchStreamTracks = (stream: MediaStream | null) => {
+    detachStreamListeners?.();
+    detachStreamListeners = null;
+    if (!stream) return;
+    const onChange = () => refreshAudioVisibility();
+    stream.addEventListener("addtrack", onChange);
+    stream.addEventListener("removetrack", onChange);
+    detachStreamListeners = () => {
+      stream.removeEventListener("addtrack", onChange);
+      stream.removeEventListener("removetrack", onChange);
+    };
+  };
+
+  const renderPane = () => {
+    if (!active) {
+      video.srcObject = null;
+      stopBtn.hidden = true;
+      return;
+    }
+    stopBtn.hidden = !active.isSelf;
+    // Re-assigning the same stream is a no-op; a different one swaps
+    // cleanly. The video stays muted (autoplay-friendly + no echo for
+    // self); remote system audio is wired separately by main.ts via
+    // attachRemoteStream so the AudioContext output device applies.
+    if (video.srcObject !== active.stream) {
+      video.srcObject = active.stream;
+      void video.play().catch(() => { /* autoplay edge cases */ });
+    }
+  };
+
+  const renderOpen = () => {
+    pane.hidden = !open;
+    document.body.classList.toggle("presenter-open", open);
+    if (open) renderPane();
+  };
+
+  const renderIndicator = () => {
+    if (!active) {
+      indicator.hidden = true;
+      indicatorName.textContent = "";
+      return;
+    }
+    indicator.hidden = false;
+    indicatorName.textContent = active.isSelf ? "You're sharing" : active.name;
+  };
+
+  // Wire the indicator: clicking opens (or closes if already open).
+  indicator.addEventListener("click", () => {
+    open = !open;
+    renderOpen();
+  });
+  closeBtn.addEventListener("click", () => {
+    open = false;
+    renderOpen();
+    opts.onClose();
+  });
+  stopBtn.addEventListener("click", () => opts.onStopShare());
+  muteBtn.addEventListener("click", () => {
+    applyVolume(volume === 0 ? lastNonZero : 0, "icon");
+  });
+  volSlider.addEventListener("input", () => {
+    applyVolume(Number(volSlider.value) / 100, "slider");
+  });
+  fsBtn.addEventListener("click", () => {
+    type WithFS = HTMLElement & {
+      requestFullscreen?: () => Promise<void>;
+    };
+    type DocWithFS = Document & {
+      fullscreenElement?: Element | null;
+      exitFullscreen?: () => Promise<void>;
+    };
+    const doc = document as DocWithFS;
+    if (doc.fullscreenElement) {
+      void doc.exitFullscreen?.();
+    } else {
+      void (pane as WithFS).requestFullscreen?.().catch((err) => {
+        console.warn("requestFullscreen failed", err);
+      });
+    }
+  });
+
+  return {
+    setActive: (info) => {
+      // Reset volume to unity on any presenter change — fresh stream
+      // gets a fresh default. Saves the user from inheriting a volume
+      // tweak (or a mute) they don't remember setting. We pass "reset"
+      // so this doesn't re-fire onAudioVolumeChange; the caller
+      // re-attaches a fresh AudioContext gain node which already starts
+      // at 1.0.
+      const presenterChanged = !active || !info
+        || active.stream !== info.stream
+        || active.isSelf !== info.isSelf;
+      if (presenterChanged) {
+        lastNonZero = 1;
+        applyVolume(1, "reset");
+      }
+      active = info;
+      if (presenterChanged) watchStreamTracks(info?.stream ?? null);
+      refreshAudioVisibility();
+      renderIndicator();
+      // If the pane is already open and the active presenter goes away,
+      // close it; otherwise update content in place.
+      if (!info && open) {
+        open = false;
+        renderOpen();
+      } else if (open) {
+        renderPane();
+      }
+    },
+    setOpen: (next) => {
+      open = next;
+      renderOpen();
+    },
+    isOpen: () => open,
+  };
+}
+
+// ScreenShareButton wraps the header share button: visibility, sharing
+// state, and a tiny popover that asks the user to pick a mode before
+// opening getDisplayMedia. The button is never disabled while a remote
+// peer is sharing — clicking starts a takeover.
+export interface ScreenShareButton {
+  setVisible: (v: boolean) => void;
+  setSharing: (sharing: boolean) => void;
+}
+export function bindScreenShareButton(opts: {
+  onPick: (mode: "document" | "motion") => void;
+  onStop: () => void;
+}): ScreenShareButton {
+  const btn = document.querySelector<HTMLButtonElement>("#screen-share");
+  const pop = document.querySelector<HTMLElement>("#share-picker");
+  const docBtn = document.querySelector<HTMLButtonElement>("#share-document");
+  const motBtn = document.querySelector<HTMLButtonElement>("#share-motion");
+  if (!btn || !pop || !docBtn || !motBtn) {
+    throw new Error("screen-share UI elements missing");
+  }
+  let sharing = false;
+
+  const setOpen = (open: boolean) => {
+    pop.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (sharing) {
+      opts.onStop();
+      return;
+    }
+    setOpen(pop.hidden);
+  });
+
+  docBtn.addEventListener("click", () => {
+    setOpen(false);
+    opts.onPick("document");
+  });
+  motBtn.addEventListener("click", () => {
+    setOpen(false);
+    opts.onPick("motion");
+  });
+
+  document.addEventListener("click", (ev) => {
+    if (pop.hidden) return;
+    const target = ev.target as Node | null;
+    if (target && (pop.contains(target) || btn.contains(target))) return;
+    setOpen(false);
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !pop.hidden) {
+      setOpen(false);
+      btn.focus();
+    }
+  });
+
+  return {
+    setVisible: (v) => { btn.hidden = !v; },
+    setSharing: (s) => {
+      sharing = s;
+      btn.classList.toggle("is-sharing", s);
+      btn.title = s ? "Stop sharing" : "Share screen";
+      btn.setAttribute("aria-label", btn.title);
+      if (s) setOpen(false);
+    },
+  };
+}
+
 // MicLevelMeter draws a small bar that follows the live mic input, used in
 // the lobby so users can verify their selected mic before joining.
 export interface MicLevelMeter {

@@ -29,6 +29,13 @@ import {
 import { GroupCipher, isE2EEAvailable } from "./e2ee.ts";
 import { Peer, turnCredsToIceServers, type PeerStats } from "./peer.ts";
 import { SignalingClient, signalingURL } from "./signaling.ts";
+import {
+  startShareCapture,
+  stopShareCapture,
+  type ShareCapture,
+  type ShareMode,
+} from "./screen.ts";
+export type { ShareMode } from "./screen.ts";
 import type { MicCapture } from "./audio.ts";
 import type { ServerEnvelope, SignalData, TurnCreds, PeerInfo } from "./wire.ts";
 
@@ -64,12 +71,21 @@ export interface RoomCallbacks {
   // (healthy=false) and again when decryption recovers (healthy=true).
   onCipherHealth: (id: string, healthy: boolean) => void;
   onChatMessage: (msg: ChatMessage) => void;
+  // onPresenterChanged fires when the room's current screen-sharer changes:
+  // peerId is the new presenter's ID (local or remote), or null when nobody
+  // is sharing. stream is the screen MediaStream when applicable, or null
+  // when sharing stopped. Self-presenter notifications surface the local
+  // capture stream so the UI can render a local preview.
+  onPresenterChanged: (peerId: string | null, stream: MediaStream | null) => void;
   onLeft: (reason: string) => void;
   onError: (msg: string) => void;
   // onReconnecting/onReconnected let the UI surface "trying to reconnect..."
-  // without conflating it with a final disconnect.
+  // without conflating it with a final disconnect. onReconnected carries
+  // the freshly-issued local peer ID — the server hands out a new ID on
+  // every join, so any caller-side cache (e.g. main.ts isSelf checks)
+  // must refresh.
   onReconnecting: (attempt: number) => void;
-  onReconnected: () => void;
+  onReconnected: (info: { localId: string }) => void;
 }
 
 interface JoinIntent {
@@ -103,6 +119,14 @@ export class Room {
   private intent: JoinIntent | null = null;
   private leaving = false;
   private reconnecting = false;
+  // Screen-share state. capture is non-null while we're the presenter;
+  // presenterId is whoever the room currently considers the presenter
+  // (local, remote, or null). The advisory `screen` signal resolves which
+  // remote peer is sharing before the video track arrives, but the UI also
+  // updates from onScreenTrack so a missed signal still self-heals.
+  private capture: ShareCapture | null = null;
+  private presenterId: string | null = null;
+  private remoteScreens = new Map<string, MediaStream>();
 
   constructor(mic: MicCapture, cb: RoomCallbacks) {
     this.mic = mic;
@@ -204,6 +228,16 @@ export class Room {
     this.cipher = null;
     if (this.groupKeyRaw) this.groupKeyRaw.fill(0);
     this.groupKeyRaw = null;
+    // Capture survives reconnect: addPeer (during the upcoming room_joined
+    // / room_created) re-installs the screen tracks on each fresh peer,
+    // and we re-announce via the screen signal. Remote presenter state,
+    // by contrast, can't survive — their PCs are torn down here. The
+    // self-presenter's UI keeps the pane up throughout.
+    if (this.presenterId && this.presenterId !== this.localId) {
+      this.presenterId = null;
+      this.remoteScreens.clear();
+      this.cb.onPresenterChanged(null, null);
+    }
     this.localId = null;
     void this.attemptReconnect();
   }
@@ -255,10 +289,11 @@ export class Room {
         }
       }
     }
-    // Out of attempts — give up.
+    // Out of attempts — give up. teardown closes any straggling state
+    // (notably the screen capture, which survives transient signaling
+    // drops but must be released when we're conceding the room).
     this.reconnecting = false;
-    this.cb.onLeft("reconnect failed");
-    this.intent = null;
+    this.teardown("reconnect failed");
   }
 
   private teardown(reason: string): void {
@@ -273,6 +308,15 @@ export class Room {
     if (this.groupKeyRaw) this.groupKeyRaw.fill(0);
     this.groupKeyRaw = null;
     this.cipher = null;
+    if (this.capture) {
+      stopShareCapture(this.capture);
+      this.capture = null;
+    }
+    if (this.presenterId !== null) {
+      this.presenterId = null;
+      this.remoteScreens.clear();
+      this.cb.onPresenterChanged(null, null);
+    }
     this.localId = null;
     this.code = null;
     this.intent = null;
@@ -291,9 +335,14 @@ export class Room {
         this.iceServers = turnCredsToIceServers(turn ?? null);
         await this.becomeKeyOwner();
         this.installSelfVAD();
+        // Sole-survivor reconnect: room got recreated under the same code,
+        // capture survived, but presenterId still points at our prior local
+        // ID. Refresh so the next peer_joined hands the joiner the screen
+        // track and the matching announcement signal.
+        if (this.capture) this.presenterId = peerId;
         if (this.reconnecting) {
           this.reconnecting = false;
-          this.cb.onReconnected();
+          this.cb.onReconnected({ localId: peerId });
         } else {
           this.cb.onJoined({ code, localId: peerId, name });
         }
@@ -311,9 +360,20 @@ export class Room {
           if (p) void p.start().catch((err) => console.error("peer.start failed", err));
         }
         this.installSelfVAD();
+        // Reconnect-with-share: addPeer already re-installed the screen
+        // tracks on every fresh peer; now re-announce via the screen signal
+        // so the receiver tags the incoming audio as screen-audio. The
+        // presenter ID also needs refreshing — it points at our prior
+        // local ID, which the server has just replaced.
+        if (this.capture) {
+          this.presenterId = peerId;
+          for (const info of peers) {
+            this.relaySignal(info.id, { kind: "screen", on: true, streamId: this.capture.stream.id });
+          }
+        }
         if (this.reconnecting) {
           this.reconnecting = false;
-          this.cb.onReconnected();
+          this.cb.onReconnected({ localId: peerId });
         } else {
           this.cb.onJoined({ code, localId: peerId, name });
         }
@@ -332,6 +392,14 @@ export class Room {
         if (peer && this.groupKeyRaw && supportsE2EE) {
           await this.sendKeyTo(peerId, publicKey);
         }
+        // If we're already sharing, the joiner needs to know the screen
+        // stream ID before the SDP offer arrives so the inbound audio
+        // track gets classified as screen-audio. addPeer has already
+        // queued the screen track on the peer; this signal precedes the
+        // offer through the same WebSocket, so ordering holds.
+        if (peer && this.capture) {
+          this.relaySignal(peerId, { kind: "screen", on: true, streamId: this.capture.stream.id });
+        }
         if (peer) {
           void peer.start().catch((err) => console.error("peer.start failed", err));
           playJoinTone();
@@ -349,6 +417,13 @@ export class Room {
           this.names.delete(peerId);
           this.cb.onPeerRemoved(peerId, name);
           playLeaveTone();
+        }
+        if (this.presenterId === peerId) {
+          this.presenterId = null;
+          this.remoteScreens.delete(peerId);
+          this.cb.onPresenterChanged(null, null);
+        } else {
+          this.remoteScreens.delete(peerId);
         }
         return;
       }
@@ -376,12 +451,43 @@ export class Room {
       await this.handleIncomingKey(data);
       return;
     }
+    if (data.kind === "screen") {
+      this.handleRemoteScreenSignal(from, data.on, data.streamId ?? null);
+      return;
+    }
     const peer = this.peers.get(from);
     if (!peer) {
       console.warn("signal from unknown peer", from);
       return;
     }
     await peer.handleSignal(data);
+  }
+
+  private handleRemoteScreenSignal(from: string, on: boolean, streamId: string | null): void {
+    // Inform the peer first so its track-event classifier has the stream
+    // ID by the time the renegotiation lands. Cleared on `on:false` so a
+    // future remote audio sender (mic) doesn't get misclassified as
+    // screen-audio by a stale match.
+    const peer = this.peers.get(from);
+    if (peer) peer.setRemoteScreenStreamId(on ? streamId : null);
+    if (on) {
+      // Takeover: a remote peer's share replaces whoever was presenting,
+      // including ourselves. If we were sharing, stop our local capture
+      // so we don't keep uploading video that nobody's looking at; the
+      // remote becomes the visible presenter.
+      if (this.presenterId === this.localId && this.capture) {
+        this.stopShare();
+      }
+      this.presenterId = from;
+      // Pass null stream — the actual MediaStream arrives on the track
+      // event a moment later and triggers a second onPresenterChanged.
+      this.cb.onPresenterChanged(from, this.remoteScreens.get(from) ?? null);
+    } else {
+      if (this.presenterId !== from) return;
+      this.presenterId = null;
+      this.remoteScreens.delete(from);
+      this.cb.onPresenterChanged(null, null);
+    }
   }
 
   // addPeer creates and registers a Peer for info. Returns null when the
@@ -405,6 +511,7 @@ export class Room {
       callbacks: {
         sendSignal: (data) => this.relaySignal(info.id, data),
         onTrack: (stream) => this.cb.onRemoteStream(info.id, stream),
+        onScreenTrack: (stream) => this.handleRemoteScreen(info.id, stream),
         onConnectionChange: (state) => this.handleConnectionChange(info.id, state),
         onChat: (body, ts) => {
           const name = this.names.get(info.id) ?? info.name;
@@ -414,10 +521,103 @@ export class Room {
     });
     peer.setLocalTrack(this.mic.outbound);
     if (this.cipher && useE2EE) peer.attachCipher(this.cipher);
+    // If we're already presenting when this peer joins mid-call, hand them
+    // the screen stream now so they get it on the very first SDP exchange.
+    // The matching `screen` signal is sent by the caller (peer_joined or
+    // room_joined handler) so the receiver knows which stream ID to tag
+    // as screen-audio.
+    if (this.capture) peer.setScreenTrack(this.capture.stream);
     this.peers.set(info.id, peer);
     this.names.set(info.id, info.name);
     this.cb.onPeerAdded(info.id, info.name);
     return peer;
+  }
+
+  // startShare prompts the user with the browser display picker, applies
+  // the selected mode, and pushes the screen-share track to every peer.
+  // Returns the capture handle on success; resolves null when the user
+  // cancels. Throws on browser-level errors (permission denied, etc.).
+  //
+  // If another peer is already sharing, this takes over: our `screen on`
+  // signal becomes their cue to stop and switch to viewing us.
+  async startShare(mode: ShareMode): Promise<ShareCapture | null> {
+    if (this.capture) return this.capture;
+    let cap: ShareCapture;
+    try {
+      cap = await startShareCapture(mode);
+    } catch (err) {
+      // NotAllowedError is the user clicking "cancel" in the picker — not
+      // a real failure; surface as a soft null so the UI can stay quiet.
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        return null;
+      }
+      throw err;
+    }
+    this.capture = cap;
+    // The track ends when the user clicks the browser's "Stop sharing"
+    // chrome bar. We need to mirror that into a normal stopShare so the
+    // peers and UI stay in sync.
+    cap.videoTrack.addEventListener("ended", () => {
+      // The track may have already been removed by an explicit stopShare.
+      if (this.capture === cap) void this.stopShare();
+    });
+    // Send the advisory signal BEFORE handing the track to the peer so the
+    // receiver has remoteScreenStreamId set by the time the SDP renegotiation
+    // arrives. WebSocket preserves order, and the SDP offer doesn't fly out
+    // until negotiationneeded fires (microtasks later), so the signal lands
+    // first in normal operation.
+    for (const id of this.peers.keys()) {
+      this.relaySignal(id, { kind: "screen", on: true, streamId: cap.stream.id });
+      this.peers.get(id)!.setScreenTrack(cap.stream);
+    }
+    this.presenterId = this.localId;
+    this.cb.onPresenterChanged(this.localId, cap.stream);
+    return cap;
+  }
+
+  // stopShare removes the screen track from every peer and stops the
+  // capture. Safe to call when not presenting (no-op).
+  stopShare(): void {
+    const cap = this.capture;
+    if (!cap) return;
+    this.capture = null;
+    for (const id of this.peers.keys()) {
+      this.relaySignal(id, { kind: "screen", on: false });
+      this.peers.get(id)!.setScreenTrack(null);
+    }
+    stopShareCapture(cap);
+    if (this.presenterId === this.localId) this.presenterId = null;
+    this.cb.onPresenterChanged(null, null);
+  }
+
+  // currentPresenter returns the peer ID of whoever is currently sharing,
+  // or null when nobody is. Used by the UI to gate the share button.
+  currentPresenter(): string | null {
+    return this.presenterId;
+  }
+
+  private handleRemoteScreen(peerId: string, stream: MediaStream | null): void {
+    if (stream) {
+      this.remoteScreens.set(peerId, stream);
+      // Track-driven path: even without the advisory signal, ontrack tells
+      // us who's presenting. Takeover semantics live in the signal handler;
+      // here we just surface a stream we already accepted as presenter.
+      // (If the signal hasn't arrived yet for some reason, we adopt the
+      // first inbound stream as presenter — same first-write-wins fallback
+      // as before.)
+      if (!this.presenterId) {
+        this.presenterId = peerId;
+      }
+      if (this.presenterId === peerId) {
+        this.cb.onPresenterChanged(peerId, stream);
+      }
+      return;
+    }
+    this.remoteScreens.delete(peerId);
+    if (this.presenterId === peerId) {
+      this.presenterId = null;
+      this.cb.onPresenterChanged(null, null);
+    }
   }
 
   private handleConnectionChange(peerId: string, state: RTCPeerConnectionState): void {

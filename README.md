@@ -6,6 +6,8 @@ Audio is encrypted between peers. Every connection runs WebRTC's built-in DTLS-S
 
 Text chat sits alongside the voice, riding per-peer WebRTC data channels — same trust model, same ephemerality. Joiners don't receive history; the channel is gone when the room is.
 
+Anyone can share their screen — one presenter at a time, up to 1080p. Pick `Document` (low frame rate, sharper) for PDFs or code, or `Motion` (30 fps) for video and games. System audio rides along where the browser offers it. Mic, screen video, and screen audio each get their own IV tag under the group key so a peer's senders never collide. A signaling drop mid-share keeps the capture alive — peers reconnect, the share resumes.
+
 Voice activity is detected automatically, with adaptive thresholds that track each mic's noise floor so quiet and loud rooms both work. Each visit you're a fresh anonymous animal name, renamable in-room.
 
 Noise suppression runs client-side via DeepFilterNet3 in WebAssembly, layered on top of the browser's built-in NS. Keyboard tapping, fans, and most non-stationary background noise stay out of the call. Always on, no toggle.

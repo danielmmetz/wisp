@@ -1,19 +1,30 @@
 // Peer is one RTCPeerConnection between us and one other peer in the room.
 //
-// Glare-free offering: when both peers exist, the one with the lexicographically
-// smaller peer ID is the offerer. The other side receives the offer and
-// answers. ICE candidates flow through the signaling channel in both directions.
+// Initial offerer: the side with the lexicographically smaller peer ID
+// creates the chat data channel and the first offer. After that, either
+// side can trigger renegotiation (e.g. by adding/removing a screen-share
+// track) and we run the standard "perfect negotiation" pattern to handle
+// glare: the impolite peer (the original offerer) ignores colliding offers,
+// and the polite peer (the answerer) rolls back its in-flight offer to
+// accept the remote one.
 //
 // E2EE: GroupCipher (when supplied) wires encryption into the local sender
 // and decryption into the remote receiver. When the cipher is not yet
 // available (the group key wrap hasn't arrived), the connection still
 // establishes and audio flows under DTLS-SRTP only; the cipher can be
-// installed later via attachCipher.
+// installed later via attachCipher. Each track (audio mic, screen share)
+// gets its own track-tag in the IV so a peer's senders never collide.
 
 import type { GroupCipher } from "./e2ee.ts";
 import type { TurnCreds, SignalData } from "./wire.ts";
 
 const OPUS_BITRATE_DEFAULT = 48_000;
+// Screen-share max outbound bitrate. 1080p text content is essentially free
+// (the encoder drops to near-zero with contentHint=text on a static page);
+// 1080p motion content tops out around here. We let WebRTC's congestion
+// control pull below this value when the network is constrained — this is
+// the ceiling, not the target.
+const SCREEN_BITRATE_MAX = 2_500_000;
 // SDP RED payload type. 63 is the de-facto value used by Chromium when it
 // negotiates RED for audio; we reuse it so peers that already understand
 // browser-side RED (Chrome 102+) interop without surprises. The munge is
@@ -40,6 +51,10 @@ export interface PeerCallbacks {
   // onTrack receives the remote audio MediaStream so the room layer can
   // attach it to an <audio> element.
   onTrack: (stream: MediaStream) => void;
+  // onScreenTrack receives the remote screen-share MediaStream when the
+  // peer starts sharing, and null when the corresponding video track ends.
+  // Optional — peers that don't render screen share can leave it unset.
+  onScreenTrack?: (stream: MediaStream | null) => void;
   // onConnectionChange surfaces ICE/connection-state transitions for the
   // quality indicator.
   onConnectionChange: (state: RTCPeerConnectionState) => void;
@@ -47,6 +62,13 @@ export interface PeerCallbacks {
   // already been validated as a string. ts is the sender's epoch ms; not
   // trusted for ordering, just shown as the timestamp of the message.
   onChat?: (body: string, ts: number) => void;
+}
+
+type RxKind = "audio" | "screen" | "screen-audio";
+
+interface PendingReceiver {
+  receiver: RTCRtpReceiver;
+  kind: RxKind;
 }
 
 export class Peer {
@@ -61,10 +83,22 @@ export class Peer {
   private cipher: GroupCipher | null = null;
   private localSender: RTCRtpSender | null = null;
   private senderWired = false;
+  private screenSender: RTCRtpSender | null = null;
+  private screenSenderWired = false;
+  private screenAudioSender: RTCRtpSender | null = null;
+  private screenAudioSenderWired = false;
+  private remoteScreenStream: MediaStream | null = null;
+  // remoteScreenStreamId is the MediaStream ID the remote presenter
+  // announced in their `screen` signal. Audio receivers whose stream ID
+  // matches get the "screen-audio" track tag for IV derivation; without
+  // this hint, a second inbound audio track would be classified as a
+  // second mic and reuse the audio IV space.
+  private remoteScreenStreamId: string | null = null;
   private chatChannel: RTCDataChannel | null = null;
   // Receivers that fired ontrack before the cipher was available; wired
-  // by attachCipher when the group key arrives.
-  private pendingReceivers: RTCRtpReceiver[] = [];
+  // by attachCipher when the group key arrives. Stored with their track
+  // kind so wireReceiver gets the right tag.
+  private pendingReceivers: PendingReceiver[] = [];
   // Buffer ICE candidates that arrived before remoteDescription is set.
   private pendingIce: RTCIceCandidateInit[] = [];
   // Snapshot of last-seen inbound counts; used to compute a windowed loss
@@ -75,6 +109,14 @@ export class Peer {
   // setParameters when the value actually changes — getParameters/setParameters
   // round-trips are cheap but not free.
   private currentBitrate = OPUS_BITRATE_DEFAULT;
+  // Perfect negotiation state. The original offerer is "impolite" and
+  // ignores colliding offers; the answerer is "polite" and rolls back its
+  // in-flight offer to accept a remote one.
+  private makingOffer = false;
+  // ignoreOffer is set when an incoming offer was discarded due to glare;
+  // the matching ICE candidates that follow get tolerated rather than
+  // surfaced as errors.
+  private ignoreOffer = false;
 
   constructor(opts: {
     localId: string;
@@ -106,17 +148,47 @@ export class Peer {
     });
     this.pc.addEventListener("track", (ev) => {
       const stream = ev.streams[0] ?? new MediaStream([ev.track]);
+      let kind: RxKind;
+      if (ev.track.kind === "video") {
+        kind = "screen";
+      } else if (this.remoteScreenStreamId && stream.id === this.remoteScreenStreamId) {
+        kind = "screen-audio";
+      } else {
+        kind = "audio";
+      }
       if (this.useE2EE) {
         if (this.cipher) {
-          this.cipher.wireReceiver(ev.receiver, this.remoteId);
+          this.cipher.wireReceiver(ev.receiver, this.remoteId, kind);
         } else {
           // Cipher not yet available — buffer this receiver and wire it when
           // attachCipher runs. Calling createEncodedStreams now (with no
           // cipher) and again later would throw "already created".
-          this.pendingReceivers.push(ev.receiver);
+          this.pendingReceivers.push({ receiver: ev.receiver, kind });
         }
       }
-      this.cb.onTrack(stream);
+      if (kind === "screen") {
+        this.remoteScreenStream = stream;
+        // When the remote stops sharing, the video track ends. Clear the
+        // tile so the UI can hide the presenter view.
+        ev.track.addEventListener("ended", () => {
+          if (this.remoteScreenStream === stream) {
+            this.remoteScreenStream = null;
+            this.cb.onScreenTrack?.(null);
+          }
+        });
+        this.cb.onScreenTrack?.(stream);
+      } else if (kind === "screen-audio") {
+        // The audio track belongs to the same MediaStream as the screen
+        // video; ev.streams[0] is shared, so the stream object the UI
+        // already has now carries audio too. Surface the stream if we
+        // haven't yet (audio-first arrival is rare but possible).
+        if (!this.remoteScreenStream) {
+          this.remoteScreenStream = stream;
+          this.cb.onScreenTrack?.(stream);
+        }
+      } else {
+        this.cb.onTrack(stream);
+      }
     });
     this.pc.addEventListener("connectionstatechange", () => {
       this.cb.onConnectionChange(this.pc.connectionState);
@@ -126,6 +198,15 @@ export class Peer {
     // first offer (no extra negotiation round-trip).
     this.pc.addEventListener("datachannel", (ev) => {
       if (ev.channel.label === "chat") this.attachChatChannel(ev.channel);
+    });
+    // negotiationneeded fires after addTrack/removeTrack when the SDP needs
+    // refreshing. The initial offer (chat data channel) is still triggered
+    // explicitly from start() to keep ordering predictable; subsequent
+    // changes (screen-share toggle) come through here. The polite peer (the
+    // answerer) generates an offer too, which the impolite peer (the
+    // offerer) ignores on collision per perfect-negotiation rules.
+    this.pc.addEventListener("negotiationneeded", () => {
+      void this.runOffer({});
     });
   }
 
@@ -187,9 +268,11 @@ export class Peer {
     if (!this.useE2EE) return;
     this.cipher = cipher;
     this.tryWireSender();
+    this.tryWireScreenSender();
+    this.tryWireScreenAudioSender();
     const drained = this.pendingReceivers;
     this.pendingReceivers = [];
-    for (const r of drained) cipher.wireReceiver(r, this.remoteId);
+    for (const pr of drained) cipher.wireReceiver(pr.receiver, this.remoteId, pr.kind);
   }
 
   // tryWireSender wires the sender exactly once, when both the sender and
@@ -200,19 +283,99 @@ export class Peer {
   private tryWireSender(): void {
     if (this.senderWired) return;
     if (!this.cipher || !this.localSender) return;
-    this.cipher.wireSender(this.localSender, this.local.id);
+    this.cipher.wireSender(this.localSender, this.local.id, "audio");
     this.senderWired = true;
+  }
+
+  private tryWireScreenSender(): void {
+    if (this.screenSenderWired) return;
+    if (!this.cipher || !this.screenSender) return;
+    this.cipher.wireSender(this.screenSender, this.local.id, "screen");
+    this.screenSenderWired = true;
+  }
+
+  private tryWireScreenAudioSender(): void {
+    if (this.screenAudioSenderWired) return;
+    if (!this.cipher || !this.screenAudioSender) return;
+    this.cipher.wireSender(this.screenAudioSender, this.local.id, "screen-audio");
+    this.screenAudioSenderWired = true;
+  }
+
+  // setRemoteScreenStreamId tells this peer which inbound MediaStream the
+  // remote will use for their screen share. Drives audio-track classification
+  // in the track event listener so screen-audio frames get the right IV tag.
+  setRemoteScreenStreamId(id: string | null): void {
+    this.remoteScreenStreamId = id;
+  }
+
+  // setScreenTrack adds (or replaces) the outbound screen-share tracks (one
+  // video, optionally one audio for system-audio capture), or removes both
+  // when stream is null. Both senders ride the same MediaStream so the
+  // remote sees them grouped — the receiver looks up the stream ID it was
+  // told about via the screen signal and tags audio frames accordingly.
+  setScreenTrack(stream: MediaStream | null): void {
+    if (stream === null) {
+      if (this.screenSender) {
+        try { this.pc.removeTrack(this.screenSender); } catch (err) { console.warn("removeTrack failed", err); }
+        this.screenSender = null;
+        this.screenSenderWired = false;
+      }
+      if (this.screenAudioSender) {
+        try { this.pc.removeTrack(this.screenAudioSender); } catch (err) { console.warn("removeTrack failed", err); }
+        this.screenAudioSender = null;
+        this.screenAudioSenderWired = false;
+      }
+      return;
+    }
+    const video = stream.getVideoTracks()[0];
+    if (!video) return;
+    const audio = stream.getAudioTracks()[0] ?? null;
+
+    // Video sender — add or replace.
+    if (this.screenSender) {
+      void this.screenSender.replaceTrack(video);
+    } else {
+      this.screenSender = this.pc.addTrack(video, stream);
+      this.tryWireScreenSender();
+      // Cap maxBitrate and mark the screen sender as low priority so audio
+      // keeps its bandwidth share under contention.
+      try {
+        const params = this.screenSender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        const enc = params.encodings[0]! as RTCRtpEncodingParameters & { networkPriority?: string };
+        enc.maxBitrate = SCREEN_BITRATE_MAX;
+        enc.priority = "low";
+        enc.networkPriority = "low";
+        void this.screenSender.setParameters(params).catch(() => { /* race */ });
+      } catch { /* harmless */ }
+    }
+
+    // System-audio sender — add, replace, or remove to match the stream.
+    if (audio) {
+      if (this.screenAudioSender) {
+        void this.screenAudioSender.replaceTrack(audio);
+      } else {
+        this.screenAudioSender = this.pc.addTrack(audio, stream);
+        this.tryWireScreenAudioSender();
+      }
+    } else if (this.screenAudioSender) {
+      try { this.pc.removeTrack(this.screenAudioSender); } catch (err) { console.warn("removeTrack failed", err); }
+      this.screenAudioSender = null;
+      this.screenAudioSenderWired = false;
+    }
   }
 
   // start kicks off the SDP exchange for the offerer side. The answerer
   // does nothing until handleSignal sees the offer.
   async start(): Promise<void> {
     if (!this.local.isOfferer) return;
-    // Chat data channel must be created before the offer so SCTP is in the
-    // first SDP. Reliable + ordered: the room is small and chat throughput
-    // is trivial, so reordering or loss isn't worth tolerating here.
+    // Chat data channel must be created before the first offer so SCTP is
+    // in the initial SDP. Creating the channel triggers negotiationneeded,
+    // which generates the actual offer. Reliable + ordered: the room is
+    // small and chat throughput is trivial, so reordering isn't tolerable.
     this.attachChatChannel(this.pc.createDataChannel("chat", { ordered: true }));
-    await this.offer({});
   }
 
   // sendChat dispatches a single chat message to this peer over the chat
@@ -254,36 +417,69 @@ export class Peer {
   async restartIce(): Promise<void> {
     if (!this.local.isOfferer) return;
     try {
-      await this.offer({ iceRestart: true });
+      await this.runOffer({ iceRestart: true });
     } catch (err) {
       console.warn("ICE restart failed", err);
     }
   }
 
-  private async offer(opts: { iceRestart?: boolean }): Promise<void> {
-    const offer = await this.pc.createOffer(opts);
-    offer.sdp = munge(offer.sdp);
-    await this.pc.setLocalDescription(offer);
-    if (this.pc.localDescription) {
-      this.cb.sendSignal({ kind: "sdp", description: this.pc.localDescription.toJSON() });
+  // runOffer creates+sends an offer with the perfect-negotiation makingOffer
+  // guard. It's used both for the initial offer (triggered by data channel
+  // creation in start()) and for renegotiations (screen-share toggle, ICE
+  // restart). On the polite side, runOffer may race with an incoming offer
+  // — handleSignal detects the collision and rolls this one back.
+  private async runOffer(opts: { iceRestart?: boolean }): Promise<void> {
+    if (this.isClosed()) return;
+    this.makingOffer = true;
+    try {
+      const offer = await this.pc.createOffer(opts);
+      if (this.isClosed()) return;
+      offer.sdp = munge(offer.sdp);
+      await this.pc.setLocalDescription(offer);
+      if (this.pc.localDescription) {
+        this.cb.sendSignal({ kind: "sdp", description: this.pc.localDescription.toJSON() });
+      }
+    } catch (err) {
+      console.warn("offer failed", err);
+    } finally {
+      this.makingOffer = false;
     }
+  }
+
+  private isClosed(): boolean {
+    // RTCPeerConnection's signalingState includes "closed" at runtime, but
+    // some TS DOM lib versions omit it from the union. Read through a cast
+    // so the comparison stays type-safe on either lib.
+    return (this.pc.signalingState as string) === "closed";
   }
 
   async handleSignal(data: SignalData): Promise<void> {
     if (data.kind === "sdp") {
       const desc = data.description;
-      if (desc.type === "offer") {
+      // Glare detection: an offer arriving while we have a local offer in
+      // flight (or pending) collides. Polite side rolls back, impolite side
+      // ignores. The original offerer (lexicographically smaller ID) is
+      // impolite — flipping that would let the answerer's renegotiation
+      // requests starve.
+      const polite = !this.local.isOfferer;
+      const offerCollision = desc.type === "offer"
+        && (this.makingOffer || this.pc.signalingState !== "stable");
+      this.ignoreOffer = !polite && offerCollision;
+      if (this.ignoreOffer) return;
+      try {
         await this.pc.setRemoteDescription(desc);
-        await this.flushPendingIce();
+      } catch (err) {
+        console.warn("setRemoteDescription failed", err);
+        return;
+      }
+      await this.flushPendingIce();
+      if (desc.type === "offer") {
         const answer = await this.pc.createAnswer();
         answer.sdp = munge(answer.sdp);
         await this.pc.setLocalDescription(answer);
         if (this.pc.localDescription) {
           this.cb.sendSignal({ kind: "sdp", description: this.pc.localDescription.toJSON() });
         }
-      } else if (desc.type === "answer") {
-        await this.pc.setRemoteDescription(desc);
-        await this.flushPendingIce();
       }
       return;
     }
@@ -295,7 +491,9 @@ export class Peer {
       try {
         await this.pc.addIceCandidate(data.candidate);
       } catch (err) {
-        console.warn("addIceCandidate failed", err);
+        // Tolerate failures for candidates that belonged to an offer we
+        // ignored due to glare; surface anything else as a warning.
+        if (!this.ignoreOffer) console.warn("addIceCandidate failed", err);
       }
     }
   }

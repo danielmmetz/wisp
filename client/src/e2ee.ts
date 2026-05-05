@@ -3,13 +3,15 @@
 // Every peer in a room shares a 32-byte group key (derived in crypto.ts and
 // distributed peer-to-peer via the signaling channel). Frames are encrypted
 // with AES-GCM under (groupKey, IV). To keep IVs unique across senders, each
-// peer prefixes its IVs with 8 bytes derived from its own peer ID:
+// peer prefixes its IVs with 7 bytes derived from its own peer ID and a
+// 1-byte track tag so a peer's audio and screen senders never collide:
 //
-//   IV (12B) = senderPrefix(8) || counter(4 BE)
+//   IV (12B) = senderPrefix(7) || trackTag(1) || counter(4 BE)
 //
-// The 4-byte counter is sent in-band; the 8-byte senderPrefix is determined
+// The 4-byte counter is sent in-band; the 7-byte senderPrefix is determined
 // by which RTCPeerConnection the frame arrived on (one connection per peer
-// pair in a mesh, so the receiver always knows the sender).
+// pair in a mesh, so the receiver always knows the sender) and the trackTag
+// is determined by the track kind (audio vs screen-share video).
 //
 // Wire layout per frame:
 //   [counter:4 BE | ciphertext-with-tag]
@@ -62,6 +64,19 @@ export function isE2EEAvailable(): boolean {
 // failures. Wired by the room layer to surface a per-peer indicator.
 export type CipherFailureSink = (peerId: string, healthy: boolean) => void;
 
+// TrackKind tags a sender or receiver inside a peer connection so the IV
+// computation differs per track. Adding a new track kind requires picking
+// a fresh, never-used trackTag byte below.
+//   audio        — microphone
+//   screen       — screen-share video
+//   screen-audio — system audio captured alongside the screen-share video
+export type TrackKind = "audio" | "screen" | "screen-audio";
+const trackTag: Record<TrackKind, number> = {
+  audio: 0x00,
+  screen: 0x01,
+  "screen-audio": 0x02,
+};
+
 // GroupCipher holds the imported AES-GCM key for a room. It's shared
 // across all senders/receivers in the local mesh.
 export class GroupCipher {
@@ -85,12 +100,15 @@ export class GroupCipher {
   ) {}
 
   // wireSender plumbs encryption into a sender's encoded-frame stream
-  // using the local peer's prefix. Pass localPeerId once at room-setup.
+  // using the local peer's prefix and a track tag. The tag must match what
+  // the receiving side uses in wireReceiver, otherwise IVs disagree and
+  // decryption fails.
   // No-op on browsers without createEncodedStreams.
-  wireSender(sender: RTCRtpSender, localPeerId: string): void {
+  wireSender(sender: RTCRtpSender, localPeerId: string, kind: TrackKind): void {
     const s = sender as RTCRtpSender & WithStreams;
     if (!s.createEncodedStreams) return;
     const prefix = peerIdPrefix(localPeerId);
+    const tag = trackTag[kind];
     let counter = 0;
     const { readable, writable } = s.createEncodedStreams();
     readable
@@ -102,7 +120,7 @@ export class GroupCipher {
             ctrl.error(new Error("e2ee counter exhausted; key rotation required"));
             return;
           }
-          frame.data = await this.encrypt(frame.data, prefix, counter++);
+          frame.data = await this.encrypt(frame.data, prefix, tag, counter++);
           ctrl.enqueue(frame);
         },
       }))
@@ -111,11 +129,13 @@ export class GroupCipher {
   }
 
   // wireReceiver plumbs decryption into a receiver's encoded-frame stream
-  // using the prefix of the remote peer it's bound to.
-  wireReceiver(receiver: RTCRtpReceiver, remotePeerId: string): void {
+  // using the prefix of the remote peer it's bound to and the matching
+  // track tag.
+  wireReceiver(receiver: RTCRtpReceiver, remotePeerId: string, kind: TrackKind): void {
     const r = receiver as RTCRtpReceiver & WithStreams;
     if (!r.createEncodedStreams) return;
     const prefix = peerIdPrefix(remotePeerId);
+    const tag = trackTag[kind];
     let consecutiveFails = 0;
     let consecutiveOks = 0;
     let unhealthy = false;
@@ -124,7 +144,7 @@ export class GroupCipher {
       .pipeThrough(new TransformStream<RTCEncodedFrame, RTCEncodedFrame>({
         transform: async (frame, ctrl) => {
           try {
-            frame.data = await this.decrypt(frame.data, prefix);
+            frame.data = await this.decrypt(frame.data, prefix, tag);
             consecutiveFails = 0;
             consecutiveOks++;
             // Recover from "unhealthy" after a clean run — gives the UI a
@@ -153,11 +173,9 @@ export class GroupCipher {
       .catch((err) => console.error("e2ee receiver pipe ended", err));
   }
 
-  private async encrypt(payload: ArrayBuffer, prefix: Uint8Array, counter: number): Promise<ArrayBuffer> {
+  private async encrypt(payload: ArrayBuffer, prefix: Uint8Array, tag: number, counter: number): Promise<ArrayBuffer> {
     if (payload.byteLength === 0) return payload; // DTX
-    const iv = new Uint8Array(12);
-    iv.set(prefix, 0);
-    new DataView(iv.buffer).setUint32(8, counter, false);
+    const iv = buildIv(prefix, tag, counter);
     const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, this.aesKey, payload);
     const out = new Uint8Array(COUNTER_BYTES + ct.byteLength);
     new DataView(out.buffer).setUint32(0, counter, false);
@@ -165,28 +183,40 @@ export class GroupCipher {
     return out.buffer;
   }
 
-  private async decrypt(buf: ArrayBuffer, prefix: Uint8Array): Promise<ArrayBuffer> {
+  private async decrypt(buf: ArrayBuffer, prefix: Uint8Array, tag: number): Promise<ArrayBuffer> {
     if (buf.byteLength === 0) return buf;
     if (buf.byteLength <= COUNTER_BYTES) throw new Error("frame too small");
     const view = new DataView(buf);
     const counter = view.getUint32(0, false);
-    const iv = new Uint8Array(12);
-    iv.set(prefix, 0);
-    new DataView(iv.buffer).setUint32(8, counter, false);
+    const iv = buildIv(prefix, tag, counter);
     const ct = new Uint8Array(buf, COUNTER_BYTES);
     return await crypto.subtle.decrypt({ name: "AES-GCM", iv }, this.aesKey, ct);
   }
 }
 
-// peerIdPrefix derives a stable 8-byte IV prefix from a peer ID. The server
-// emits 16-hex-char (= 8-byte) peer IDs; we decode those directly so two
-// peers can independently compute each other's prefix from the wire.
+function buildIv(prefix: Uint8Array, tag: number, counter: number): Uint8Array<ArrayBuffer> {
+  // Explicit ArrayBuffer-backed buffer so the result type is acceptable as
+  // a BufferSource argument to crypto.subtle.{encrypt,decrypt}. TS 5.7+
+  // widens to `ArrayBufferLike` (which includes SharedArrayBuffer) for
+  // freshly-constructed Uint8Arrays returned from a helper, and SubtleCrypto
+  // doesn't accept that widened type.
+  const iv = new Uint8Array(new ArrayBuffer(12));
+  iv.set(prefix, 0); // 7 bytes
+  iv[7] = tag & 0xff;
+  new DataView(iv.buffer).setUint32(8, counter, false);
+  return iv;
+}
+
+// peerIdPrefix derives a stable 7-byte IV prefix from a peer ID. The server
+// emits 16-hex-char (= 8-byte) peer IDs; we use the first 14 hex chars so
+// two peers can independently compute each other's prefix from the wire and
+// reserve byte 7 of the IV for the per-track tag.
 function peerIdPrefix(peerId: string): Uint8Array {
   if (peerId.length !== 16 || !/^[0-9a-f]+$/.test(peerId)) {
     throw new Error(`unexpected peer ID format: ${peerId}`);
   }
-  const out = new Uint8Array(8);
-  for (let i = 0; i < 8; i++) {
+  const out = new Uint8Array(7);
+  for (let i = 0; i < 7; i++) {
     out[i] = parseInt(peerId.slice(i * 2, i * 2 + 2), 16);
   }
   return out;

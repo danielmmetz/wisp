@@ -305,9 +305,10 @@ button.ghost:hover { color: var(--fg); }
  * list or chat). Self appears at the top of the peers list (#self-peer-row)
  * so rename + leave still have a home, accessible via the Users tab. */
 @media (max-width: 599px) {
-  /* brand: glyph in, text + tagline out */
-  .brand-glyph { display: inline-block; }
-  .brand-text { display: none; }
+  /* brand: in a room the header is dense, so collapse to the glyph; on the
+   * lobby there's plenty of room, so keep the wordmark. tagline always drops. */
+  body.in-room .brand-glyph { display: inline-block; }
+  body.in-room .brand-text { display: none; }
   .tagline { display: none; }
 
   /* room state moves into the site-header */
@@ -781,4 +782,273 @@ input.name-edit {
   height: 100%;
   background: var(--good);
   transition: width 60ms linear;
+}
+
+/* ============================== Screen share ============================== */
+
+/* The screen-share button lives in the site-header, next to mute. It shows
+ * one of two glyphs depending on whether the local user is currently
+ * sharing — same SVG-swap pattern as .mute-btn. The button itself stays
+ * hidden until JS confirms the browser supports getDisplayMedia AND we're
+ * in a room. On narrow viewports the .header-action rule reveals it; on
+ * wide we explicitly show it via body.in-room below. */
+.screen-share-btn .ic-screen-stop { display: none; }
+.screen-share-btn.is-sharing .ic-screen { display: none; }
+.screen-share-btn.is-sharing .ic-screen-stop { display: block; }
+.screen-share-btn.is-sharing,
+.screen-share-btn.is-sharing:hover { color: var(--bad); }
+
+/* Wide viewport: show the share button when in a room. Narrow inherits
+ * the .header-action rule from above which already covers it. */
+@media (min-width: 600px) {
+  body.in-room .screen-share-btn { display: inline-flex; }
+}
+
+/* Share picker popover — anchored under the screen-share button. */
+#share-picker {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  /* The screen-share button sits to the left of the share-or-copy button,
+   * which sits to the left of leave/gear. We anchor with right:offset so
+   * the caret lines up roughly under the button across viewports. */
+  right: 6.5rem;
+  width: 17rem;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 0.6rem;
+  box-shadow:
+    0 16px 40px rgba(20, 30, 60, 0.14),
+    0 2px 4px rgba(20, 30, 60, 0.06);
+  z-index: 10;
+}
+@media (prefers-color-scheme: dark) {
+  #share-picker {
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.5),
+      0 2px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+.pop-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.pop-action:hover {
+  background: var(--rule-2);
+  border-color: var(--rule);
+}
+.pop-action-title { font-weight: 600; font-size: 0.95rem; }
+.pop-action-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* ---- presenter pane (overlay) ---- */
+
+/* The presenter view is a separate region that, when opened by clicking
+ * the rail indicator, takes over the chat column instead of stacking
+ * inline above it. We accomplish that by placing #presenter-pane in the
+ * same grid cell as .chat and toggling which is shown via body.presenter-
+ * open. The chat keeps its scroll position when reopened.
+ *
+ * Auto-open is intentionally NOT done — the sidebar indicator is the
+ * single entry point so the share never hijacks the chat by surprise. */
+/* The pane uses display:block when not hidden. JS owns the `hidden`
+ * attribute (so the global `[hidden] { display: none !important }` rule
+ * still wins when closed) and adds .presenter-open to <body> in lockstep
+ * so .chat collapses out of the same grid cell. The pane uses position:
+ * relative so the floating control overlays anchor to it. */
+#presenter-pane {
+  position: relative;
+  grid-column: 3;
+  grid-row: 1;
+  display: block;
+  background: #000;
+  min-height: 0;
+}
+body.presenter-open .chat { display: none; }
+
+.presenter-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* `contain` preserves aspect ratio inside whatever space the pane has;
+   * letterboxing reads as intentional against the black background. */
+  object-fit: contain;
+  background: #000;
+}
+
+/* Floating overlay controls — top-right cluster of viewer actions plus a
+ * top-left "Stop sharing" affordance for self-presenters. Always-visible
+ * over the video; the translucent backdrop keeps them legible against
+ * any underlying frame without obscuring much of the content.
+ *
+ * Inline style (no header bar) means the video fills the full pane and
+ * the controls float as small chips at the corners. */
+.presenter-overlay-controls {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  z-index: 1;
+}
+.presenter-overlay-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+.presenter-overlay-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+.presenter-overlay-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.presenter-stop-btn {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 1;
+  background: rgba(220, 38, 38, 0.92);
+  color: #fff;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.presenter-stop-btn:hover { filter: brightness(1.08); }
+.presenter-stop-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* Fullscreen toggle: expand glyph default, collapse when pane is the
+ * fullscreen element. */
+#presenter-fullscreen .ic-exit { display: none; }
+#presenter-pane:fullscreen #presenter-fullscreen .ic-enter { display: none; }
+#presenter-pane:fullscreen #presenter-fullscreen .ic-exit { display: block; }
+
+/* Volume cluster: mute toggle + slider, sharing the overlay backdrop. The
+ * slider is sized to fit alongside the icon buttons without dominating
+ * the cluster — short tracks read as fine-tune controls, full sweeps are
+ * for setting overall level. Rendered above 100% to support boost. */
+.presenter-overlay-volume {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-right: 0.3rem;
+}
+.presenter-volume-slider {
+  width: 80px;
+  accent-color: #fff;
+  cursor: pointer;
+}
+
+/* Audio-mute glyph swap: speaker on by default, speaker-with-X when muted. */
+#presenter-audio-mute .ic-vol-off { display: none; }
+#presenter-audio-mute.is-muted .ic-vol-on { display: none; }
+#presenter-audio-mute.is-muted .ic-vol-off { display: block; }
+#presenter-audio-mute.is-muted { color: var(--bad); }
+
+#presenter-pane:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ---- presenter indicator (rail entry point) ---- */
+
+/* A button that lives in the rail under the room-head and announces an
+ * active screen share. Clicking it opens the presenter pane. Hidden when
+ * nobody's sharing.
+ *
+ * On narrow viewports the rail uses display:contents and grid-rows; the
+ * indicator becomes its own row above the room-tabs so it stays visible
+ * regardless of which tab is active. */
+.presenter-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: calc(100% - 1rem);
+  margin: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--accent-soft);
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  flex: 0 0 auto;
+}
+.presenter-indicator:hover {
+  border-color: var(--accent);
+}
+body.presenter-open .presenter-indicator {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.presenter-indicator svg { flex: 0 0 auto; }
+.presenter-indicator-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+.presenter-indicator-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.presenter-indicator-name {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.presenter-open .presenter-indicator-name {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Narrow: indicator gets its own row above the tabs so it shows on both
+ * Users and Chat tabs. */
+@media (max-width: 599px) {
+  #room { grid-template-rows: auto auto minmax(0, 1fr); }
+  .room-tabs { grid-row: 2; }
+  .rail-list { grid-row: 3; }
+  .chat { grid-row: 3; }
+  #presenter-pane { grid-column: 1; grid-row: 3; }
+  .presenter-indicator {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0.4rem 0.5rem;
+  }
 }

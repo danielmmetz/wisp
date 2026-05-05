@@ -73,12 +73,19 @@ export interface SignalForwarded {
 //   - WebRTC SDP offers/answers
 //   - WebRTC ICE candidates
 //   - Wrapped E2EE group keys
+//   - Screen-share status announcements (advisory; the actual track flow
+//     is the WebRTC video track on the same RTCPeerConnection)
 // The discriminator is the `kind` field. New kinds are additive — older clients
 // ignore unknown kinds.
 export type SignalData =
   | { kind: "sdp"; description: RTCSessionDescriptionInit }
   | { kind: "ice"; candidate: RTCIceCandidateInit }
-  | { kind: "key"; epoch: number; ephemeralPublicKey: string; iv: string; ciphertext: string };
+  | { kind: "key"; epoch: number; ephemeralPublicKey: string; iv: string; ciphertext: string }
+  // streamId is the MediaStream ID the sender will use for both the video
+  // and any system-audio track, so the receiver can classify a second
+  // inbound audio track as screen-audio (different IV tag) rather than
+  // misclassifying it as a second mic.
+  | { kind: "screen"; on: boolean; streamId?: string };
 
 export interface ErrorPayload {
   code: string;

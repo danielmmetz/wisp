@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <style>
+    path { stroke: #2563eb; }
+    @media (prefers-color-scheme: dark) {
+      path { stroke: #6aa8ff; }
+    }
+  </style>
+  <g fill="none" stroke-width="2.4" stroke-linecap="round">
+    <path d="M4 11v2" />
+    <path d="M8 8v8" />
+    <path d="M12 5v14" />
+    <path d="M16 8v8" />
+    <path d="M20 11v2" />
+  </g>
+</svg>
