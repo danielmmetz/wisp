@@ -1,38 +1,49 @@
 :root {
-  --bg: #11131a;
-  --fg: #e6e8ee;
-  --muted: #8a93a6;
-  --card: #1a1d27;
-  --card-2: #20242f;
-  --card-border: #2a2f3d;
-  --accent: #6aa8ff;
-  --accent-fg: #0b1422;
-  --good: #4ade80;
-  --warn: #fbbf24;
-  --bad: #f87171;
-  --bubble: #232836;
-  --bubble-self: #2b3a5a;
+  --bg: #fafbfc;
+  --fg: #1a1d27;
+  --muted: #5b6478;
+  --muted-2: #8a93a6;
+  --card: #ffffff;
+  --card-2: #f6f8fb;
+  --rail: #fafbfd;
+  --rule: #e3e6ec;
+  --rule-2: #eef0f4;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.18);
+  --accent-fg: #ffffff;
+  --good: #0f9d58;
+  --warn: #b56a07;
+  --bad: #c53030;
+  /* Shared height for the footer rows (rail-self and chat-compose) so the
+   * two bottom strips line up. Sized to fit a single-line input with the
+   * compose's padding + border. */
+  --footer-row-h: 3.9rem;
 }
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    --bg: #fafbfc;
-    --fg: #1a1d27;
-    --muted: #5b6478;
-    --card: #ffffff;
-    --card-2: #f5f7fa;
-    --card-border: #e3e6ec;
-    --accent: #2563eb;
-    --accent-fg: #ffffff;
-    --bubble: #f0f2f6;
-    --bubble-self: #dce7fb;
+    --bg: #11131a;
+    --fg: #e6e8ee;
+    --muted: #8a93a6;
+    --muted-2: #6c7689;
+    --card: #1a1d27;
+    --card-2: #20242f;
+    --rail: #14171f;
+    --rule: #2a2f3d;
+    --rule-2: #232838;
+    --accent: #6aa8ff;
+    --accent-soft: rgba(106, 168, 255, 0.22);
+    --accent-fg: #0b1422;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
   }
 }
 
 * { box-sizing: border-box; }
 
 /* Make sure flex/grid layout never overrides the hidden attribute. Without
- * this, #room { display: flex } would beat the UA's [hidden] rule and the
- * room card would render on the lobby screen. */
+ * this, #room { display: grid } would beat the UA's [hidden] rule and the
+ * room would render on the lobby screen. */
 [hidden] { display: none !important; }
 
 html, body {
@@ -45,9 +56,7 @@ html, body {
   line-height: 1.5;
 }
 
-/* Vertical flex shell so the room view can claim "the rest of the viewport"
- * without each child having to know its sibling's height. The lobby still
- * lives in a centered card and just sits at top of the column. */
+/* Vertical flex shell so the room view can claim "the rest of the viewport". */
 body {
   display: flex;
   flex-direction: column;
@@ -58,11 +67,76 @@ body {
   margin: 0;
   padding: 0.5rem 1rem;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
   flex: 0 0 auto;
+  position: relative;
 }
+.site-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  flex: 1;
+}
+.site-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex: 0 0 auto;
+}
+.brand { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* Brand has two faces: text on wide, glyph on narrow. The glyph is a small
+ * wave/sound mark sized to match the other header icons (mic, share, gear)
+ * so the row reads as a uniform 18px-icon strip when collapsed. */
+.brand-glyph {
+  display: none;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* Narrow-only room indicators in the site-header. Hidden by default and on
+ * wide; shown via media query + body.in-room (or :not(:empty)). */
+.code-narrow {
+  display: none;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.status-narrow {
+  display: none;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Header action buttons (mic, share, leave). Hidden by default; revealed
+ * on narrow when in a room. The descendant selector buys enough specificity
+ * to win over .icon-btn { display: inline-flex }, which would otherwise
+ * leak through on wide because of source order. */
+.site-header-actions .header-action { display: none; }
+@media (max-width: 599px) {
+  body.in-room .site-header-actions .header-action { display: inline-flex; }
+}
+
+/* Share-or-copy buttons (one in the rail-head on wide, one in the
+ * site-header on narrow) carry both SVGs and let CSS pick which is visible
+ * based on whether the browser supports the Web Share API. body.share-
+ * supported is set once at init time. */
+.share-or-copy .ic-share { display: none; }
+.share-or-copy .ic-copy { display: block; }
+body.share-supported .share-or-copy .ic-share { display: block; }
+body.share-supported .share-or-copy .ic-copy { display: none; }
 
 .brand {
   font-size: 1.1rem;
@@ -79,74 +153,23 @@ body {
   font-size: 0.85rem;
 }
 
-main {
+main#root {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* Lobby keeps the centered narrow card. We constrain it inside main rather
- * than constraining main itself, since main switches between "centered narrow
- * lobby" and "full-bleed room". */
+/* Lobby keeps the centered narrow card. */
 #lobby {
   width: 100%;
   max-width: 32rem;
   margin: 1rem auto;
 }
 
-/* Room takes the full viewport: corner-to-corner background, no rounded card
- * border, padding only inside the panes. The flex chain (body → main → #room)
- * is what lets the chat pane fill the available height. */
-#room {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: var(--card);
-}
-#room .room-head {
-  padding: 0.5rem 1rem;
-  margin: 0;
-  border-bottom: 1px solid var(--card-border);
-  flex: 0 0 auto;
-}
-#room .room-head-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-}
-#room .room-head-right {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-#room #leave-btn {
-  padding: 0.3rem 0.7rem;
-  font-size: 0.9rem;
-}
-#room #room-code {
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-#room #room-status {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#room #room-status:empty { display: none; }
-
 .card {
   background: var(--card);
-  border: 1px solid var(--card-border);
+  border: 1px solid var(--rule);
   border-radius: 14px;
   padding: 1.5rem 1.5rem 1.25rem;
 }
@@ -161,26 +184,10 @@ main {
   flex: 1;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  margin-bottom: 0.85rem;
-}
-
-.field-label {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.field > input {
-  width: 100%;
-}
-
 input, button {
   font: inherit;
   border-radius: 8px;
-  border: 1px solid var(--card-border);
+  border: 1px solid var(--rule);
   padding: 0.6rem 0.9rem;
   background: transparent;
   color: var(--fg);
@@ -198,21 +205,15 @@ input::placeholder {
 
 button {
   cursor: pointer;
-  background: var(--card-border);
+  background: var(--rule);
 }
-button:hover { filter: brightness(1.1); }
+button:hover { filter: brightness(1.05); }
 
 button.primary {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: transparent;
   font-weight: 600;
-}
-
-button.danger {
-  background: transparent;
-  color: var(--bad);
-  border-color: var(--card-border);
 }
 
 button.ghost {
@@ -234,7 +235,7 @@ button.ghost:hover { color: var(--fg); }
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--card-border);
+  background: var(--rule);
 }
 .divider span { margin: 0 0.75rem; }
 
@@ -244,170 +245,198 @@ button.ghost:hover { color: var(--fg); }
   min-height: 1.5em;
 }
 
-.room-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
+/* ============================== Room ============================== */
 
-.muted { color: var(--muted); margin-right: 0.4rem; font-size: 0.9rem; }
-
-.room-head code {
-  font-size: 1.1rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-/* Side-by-side body: peers list on the left, chat on the right. The grid
- * collapses to a single column below 720px so the chat pane drops below the
- * peers list on phones. */
-/* Room body fills the remaining vertical space below the head. On desktop
- * it's a 3-column grid: peers / drag handle / chat. The peers width is
- * driven by a custom property the JS resizer writes to, falling back to a
- * sensible default. On mobile we drop to a single column and hide the
- * drag handle — touch targets that small are not worth keeping. */
-.room-body {
+/* Room takes the full viewport: rail on the left, chat on the right.
+ * The flex chain (body → main → #room) is what lets the chat scroll fill
+ * the available height. */
+#room {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 13rem 1px minmax(0, 1fr);
+  background: var(--card);
 }
-@media (min-width: 720px) {
-  .room-body {
-    grid-template-columns: var(--peers-width, 22rem) 6px minmax(0, 1fr);
-  }
-}
+.vrule { background: var(--rule); }
 
-.peers-pane {
-  padding: 0.7rem;
-  border-bottom: 1px solid var(--card-border);
-  overflow-y: auto;
-}
-@media (min-width: 720px) {
-  .peers-pane {
-    border-bottom: 0;
-    border-right: 0;
-  }
-}
-
-.pane-resizer {
-  display: none;
-}
-@media (min-width: 720px) {
-  .pane-resizer {
-    display: block;
-    cursor: col-resize;
-    background: var(--card-border);
-    /* widen the hover hit area without widening the visible bar */
-    position: relative;
-  }
-  .pane-resizer::after {
-    content: "";
-    position: absolute;
-    inset: 0 -4px;
-  }
-  .pane-resizer:hover,
-  .pane-resizer.dragging { background: var(--accent); }
-  /* Disable text selection while dragging — without this, a fast drag will
-   * select the chat scroll text and leave it highlighted on release. */
-  body.resizing { cursor: col-resize; user-select: none; }
-}
-
-#peers {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* ---- rail ---- */
+.rail {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-}
-
-/* row2 from the mockup: minimal at rest, controls slide in on hover. The
- * grid leaves a flex slot for the name; the .peer-extra block is positioned
- * absolutely so it can fade in over the trailing badges without reshaping
- * the row. On touch devices we drop the hover and just show controls. */
-.peer {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
-  align-items: center;
-  gap: 0.55rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid var(--card-border);
-  border-radius: 10px;
-  background: var(--card-2);
-  position: relative;
-  min-height: 2.5rem;
-}
-
-.peer .indicator {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--card-border);
-  flex: 0 0 9px;
-  transition: background 60ms linear, box-shadow 60ms linear;
-}
-.peer.speaking .indicator {
-  background: var(--good);
-  box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
-}
-.peer .name {
-  font-weight: 500;
+  background: var(--rail);
   min-width: 0;
+  min-height: 0;
+}
+
+/* ---- room tabs (narrow only) ---- */
+.room-tabs { display: none; }
+.room-tabs button {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.92rem;
+  border-radius: 0;
+}
+.room-tabs button:hover { color: var(--fg); }
+.room-tabs button.active {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.room-tabs button .tab-count {
+  color: var(--muted-2);
+  font-weight: 400;
+  margin-left: 0.6em;
+}
+.room-tabs button .tab-count:empty { display: none; }
+
+/* On narrow viewports we collapse a lot of chrome into the site-header to
+ * win vertical real estate: the rail-head and rail-self go away, the brand
+ * shrinks to a glyph, and the room code + per-room actions (mic, share)
+ * move up into the top bar. The site-header thus carries everything when
+ * in a room; the lobby falls back to the original brand + tagline + gear.
+ *
+ * The room body becomes a 2-row column: tabs, then the active pane (peers
+ * list or chat). Self appears at the top of the peers list (#self-peer-row)
+ * so rename + leave still have a home, accessible via the Users tab. */
+@media (max-width: 599px) {
+  /* brand: glyph in, text + tagline out */
+  .brand-glyph { display: inline-block; }
+  .brand-text { display: none; }
+  .tagline { display: none; }
+
+  /* room state moves into the site-header */
+  body.in-room .code-narrow:not(:empty) { display: inline-block; }
+  body.in-room .status-narrow.is-status { display: inline; }
+
+  /* room body: 2-row column (tabs, active pane). rail-head and rail-self
+   * are hidden — their controls live in the site-header now. */
+  #room {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .vrule { display: none; }
+  .rail { display: contents; }
+  /* body-prefixed for specificity — the general .rail-head and .rail-self
+   * rules below in source order would otherwise win and re-show them. */
+  body .rail-head { display: none; }
+  body .rail-self { display: none; }
+  .room-tabs {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+    border-bottom: 1px solid var(--rule);
+    background: var(--rail);
+  }
+  .rail-list { grid-column: 1; grid-row: 2; min-height: 0; }
+  .chat { grid-column: 1; grid-row: 2; min-height: 0; }
+
+  /* tab toggle: hide the inactive pane. Default is .tab-chat (set in JS). */
+  #room:not(.tab-users) .rail-list { display: none; }
+  #room:not(.tab-chat) .chat { display: none; }
+
+  /* show the self peer row at the top of the Users tab */
+  body.in-room #self-peer-row.peer { display: grid; }
+}
+
+/* hide the self peer row everywhere except narrow + in-room */
+#self-peer-row { display: none; }
+
+.rail-head {
+  padding: 0.7rem 0.85rem 0.55rem;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+.rail-head-id { min-width: 0; }
+.rail-head .code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  line-height: 1.25;
+  word-break: break-all;
+  display: block;
+}
+.rail-head .meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin-top: 0.1rem;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: block;
 }
-.peer.is-muted .name { color: var(--muted); text-decoration: line-through; }
-.peer .name.editable {
-  cursor: text;
-  border-bottom: 1px dashed transparent;
+.rail-head .meta:empty { display: none; }
+
+/* ---- peers list ---- */
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.45rem 0;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
-.peer .name.editable:hover {
-  border-bottom-color: var(--muted);
+
+.peer {
+  display: grid;
+  grid-template-columns: 8px 1fr auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.32rem 0.85rem 0.32rem 0.65rem;
+  font-size: 0.92rem;
+  border-left: 3px solid transparent;
+  position: relative;
+  min-height: 1.85rem;
 }
-.peer .name input.name-edit {
-  font: inherit;
+.peer:hover { background: var(--rule-2); }
+
+.peer .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rule);
+  justify-self: center;
+  transition: background 60ms linear, box-shadow 60ms linear;
+}
+.peer.speaking { border-left-color: var(--accent); }
+.peer.speaking .dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.peer.speaking .nm { color: var(--accent); font-weight: 600; }
+.peer.is-muted .nm { color: var(--muted); text-decoration: line-through; }
+
+.peer .nm {
   font-weight: 500;
-  color: var(--fg);
-  background: var(--card);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 0.1rem 0.3rem;
-  width: 100%;
-  max-width: 14rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.peer .quality {
-  font-weight: 700;
-  color: var(--good);
-  font-size: 0.9rem;
-  line-height: 1;
-}
-.peer .quality::before { content: "●"; }
-.peer .quality.degraded { color: var(--warn); }
-.peer .quality.poor { color: var(--bad); }
-.peer .quality.unknown { color: var(--muted); }
-
-.peer .transport {
-  font-size: 0.65rem;
-  letter-spacing: 0.04em;
+.peer .badge {
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--good);
-  padding: 0.05rem 0.45rem;
-  border: 1px solid var(--good);
+  color: var(--muted);
+  padding: 0.05rem 0.4rem;
   border-radius: 999px;
+  border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.peer .transport:empty {
-  display: none;
-}
-.peer .transport.relayed {
-  color: var(--warn);
-  border-color: var(--warn);
-}
+.peer .badge:empty { display: none; }
+.peer .badge.relayed { color: var(--warn); border-color: var(--warn); }
 
 .peer .cipher {
   font-size: 0.85rem;
@@ -418,6 +447,8 @@ button.ghost:hover { color: var(--fg); }
 .peer .cipher.bad { color: var(--bad); }
 .peer .cipher:empty { display: none; }
 
+/* hover-reveal vol + mute on remote peer rows. Slides in from the right
+ * over the trailing badges so the row layout doesn't reflow. */
 .peer .peer-extra {
   display: flex;
   gap: 0.5rem;
@@ -426,7 +457,7 @@ button.ghost:hover { color: var(--fg); }
   right: 0.6rem;
   top: 50%;
   transform: translateY(-50%);
-  background: linear-gradient(to right, transparent, var(--card-2) 18%);
+  background: linear-gradient(to right, transparent, var(--rule-2) 18%);
   padding-left: 1.5rem;
   opacity: 0;
   transition: opacity 100ms ease;
@@ -441,12 +472,78 @@ button.ghost:hover { color: var(--fg); }
   .peer .peer-extra {
     opacity: 1;
     pointer-events: auto;
+    background: transparent;
+    padding-left: 0.4rem;
   }
 }
 .peer .peer-extra .vol { width: 5rem; }
 
-/* Bare button with a stroke icon. Used by mute and copy-link in the room
- * head; hover lightens to fg, the muted-row state recolors the icon red. */
+/* ---- self block (rail bottom) ----
+ * Single-row layout: name + quality on the left, mic + leave on the right.
+ * min-height + align-items: center keep this in lockstep with .chat-compose
+ * so the two footer rows line up. */
+.rail-self {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem;
+  min-height: var(--footer-row-h);
+  border-top: 1px solid var(--rule);
+  background: var(--card-2);
+  flex: 0 0 auto;
+}
+.rail-self .id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.rail-self .id strong {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* Editable name (used in both .rail-self and #self-peer-row). */
+.editable {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+}
+.editable:hover {
+  border-bottom-color: var(--muted);
+}
+input.name-edit {
+  font: inherit;
+  font-weight: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  width: 100%;
+  max-width: 10rem;
+}
+.rail-self .id .qmeta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.rail-self .qmeta.degraded { color: var(--warn); }
+.rail-self .qmeta.poor { color: var(--bad); }
+
+.rail-self .ctrls {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex: 0 0 auto;
+}
+
+/* ---- icon buttons (mic toggle, copy link, leave) ---- */
 .icon-btn {
   background: transparent;
   border: 0;
@@ -459,158 +556,227 @@ button.ghost:hover { color: var(--fg); }
   justify-content: center;
   line-height: 0;
 }
-.icon-btn:hover { color: var(--fg); background: var(--card-border); }
+.icon-btn:hover { color: var(--fg); background: var(--rule-2); }
 .icon-btn svg { display: block; }
+.leave-btn { color: var(--bad); }
+.leave-btn:hover { color: var(--bad); background: rgba(197, 48, 48, 0.12); }
 
+.mute-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  line-height: 0;
+}
+.mute-btn:hover { color: var(--fg); background: var(--rule-2); }
+.mute-btn .icon-mic-slash { display: none; }
+.mute-btn.is-muted .icon-mic { display: none; }
+.mute-btn.is-muted .icon-mic-slash { display: block; }
+.mute-btn.is-muted,
+.mute-btn.is-muted:hover { color: var(--bad); }
+
+/* mute toggle on a peer row's hover-reveal block uses the same icon swap */
 .peer .mute .icon-mic-slash { display: none; }
 .peer.is-muted .mute .icon-mic { display: none; }
 .peer.is-muted .mute .icon-mic-slash { display: block; }
 .peer.is-muted .mute,
 .peer.is-muted .mute:hover { color: var(--bad); }
 
-/* Chat pane fills its grid cell vertically. The flex chain (room-body →
- * chat-pane → chat-scroll) lets the scroll area soak up whatever height
- * the cell has, with the header and compose form pinned to top and bottom. */
-.chat-pane {
+/* ============================== Chat ============================== */
+.chat {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--card-border);
+  background: var(--card);
 }
-@media (max-width: 719px) {
-  .chat-pane { border-left: 0; border-top: 1px solid var(--card-border); }
-}
-.chat-header {
-  font-size: 0.78rem;
-  color: var(--muted);
-  padding: 0.55rem 0.9rem;
-  border-bottom: 1px solid var(--card-border);
-}
+
 .chat-scroll {
   list-style: none;
   margin: 0;
-  padding: 0.8rem 0.9rem;
+  padding: 0.85rem 0.55rem;
   flex: 1;
-  /* min-height: 0 lets the flex item shrink below its content height so
-   * overflow-y: auto actually engages instead of pushing the page taller. */
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
   overflow-y: auto;
-}
-.msg {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.45rem;
 }
-.msg .head {
-  font-size: 0.78rem;
-  color: var(--muted);
+
+.msg {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.2em;
+  column-gap: 0.9rem;
+  align-items: baseline;
+  font-size: 0.94rem;
 }
-.msg .head .who {
-  color: var(--fg);
-  font-weight: 500;
-}
-.msg .head .sep { margin: 0 0.25rem; }
-.msg .body {
-  background: var(--bubble);
-  padding: 0.5rem 0.7rem;
-  border-radius: 10px;
-  align-self: flex-start;
-  max-width: 90%;
-  font-size: 0.92rem;
+.msg .head-line {
+  line-height: 1.5;
+  min-width: 0;
   word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.msg .head-line .who {
+  font-weight: 600;
+  margin-right: 0.4em;
+}
+/* pre-wrap on the body preserves user-entered runs of spaces and newlines.
+ * Keep it scoped to .body — pre-wrap on .head-line would render the
+ * indentation between the template's spans as a literal line break. */
+.msg .head-line .body {
+  color: var(--fg);
   white-space: pre-wrap;
 }
-.msg.self .body { background: var(--bubble-self); }
-.msg.system {
-  align-items: center;
+.msg .time {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
-.msg.system .body {
-  background: transparent;
+.msg.continued .head-line .who { display: none; }
+.msg.continued .time { visibility: hidden; }
+.msg.system {
+  grid-column: 1 / -1;
+  text-align: center;
   color: var(--muted);
   font-style: italic;
   font-size: 0.82rem;
-  padding: 0;
-  text-align: center;
+  padding: 0.15rem 0;
 }
 
+/* compose */
 .chat-compose {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
-  padding: 0.7rem 0.8rem;
-  border-top: 1px solid var(--card-border);
+  padding: 0.55rem;
+  min-height: var(--footer-row-h);
+  border-top: 1px solid var(--rule);
   background: var(--card);
+  flex: 0 0 auto;
 }
 .chat-compose input {
   flex: 1;
   background: var(--card-2);
-  border: 1px solid var(--card-border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
   color: var(--fg);
-  padding: 0.5rem 0.7rem;
+  padding: 0.55rem 0.8rem;
   font: inherit;
 }
-.chat-compose input::placeholder {
-  color: var(--muted);
-  opacity: 0.6;
+.chat-compose input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+  border-color: transparent;
 }
 .chat-compose button {
-  padding: 0 0.9rem;
+  padding: 0 0.95rem;
   font-weight: 600;
 }
 
-.settings {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--card-border);
+/* ============================== Audio settings (gear + popover) ============================== */
+.gear-btn {
+  /* slightly larger hit area than other icon-btns since this is a top-level
+   * affordance. Inherits color/hover from .icon-btn. */
+  padding: 6px;
 }
-.settings > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 0.9rem;
-  list-style: revert;
-  padding: 0.25rem 0;
+.gear-btn[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--rule-2);
 }
-.settings > summary:hover { color: var(--fg); }
-.settings[open] > summary { color: var(--fg); margin-bottom: 0.75rem; }
 
-.setting {
+#audio-popover {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0.7rem;
+  width: 17rem;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 0.85rem;
+  box-shadow:
+    0 16px 40px rgba(20, 30, 60, 0.14),
+    0 2px 4px rgba(20, 30, 60, 0.06);
+  z-index: 10;
+}
+@media (prefers-color-scheme: dark) {
+  #audio-popover {
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.5),
+      0 2px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+/* small caret pointing back to the gear icon */
+#audio-popover::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  right: 1rem;
+  width: 12px;
+  height: 12px;
+  background: var(--card);
+  border-left: 1px solid var(--rule);
+  border-top: 1px solid var(--rule);
+  transform: rotate(45deg);
+}
+
+.pop-head {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 0.55rem;
+}
+.pop-row {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
-  margin-bottom: 0.85rem;
+  margin-bottom: 0.7rem;
 }
-.setting-label {
-  font-size: 0.85rem;
+.pop-row .lbl {
+  font-size: 0.78rem;
   color: var(--muted);
 }
-.setting > select {
+.pop-row > select {
   width: 100%;
   font: inherit;
   border-radius: 8px;
-  border: 1px solid var(--card-border);
-  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--rule);
+  padding: 0.45rem 0.6rem;
   background: var(--card);
   color: var(--fg);
 }
-.setting.mic-test-row {
-  flex-direction: row;
+
+.test-row {
+  display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
+  margin-top: 0.4rem;
 }
-.setting.mic-test-row > button {
-  flex-shrink: 0;
+.test-row > button {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  padding: 0.32rem 0.6rem;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
 }
-.mic-meter {
+.test-row > button:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.test-row > .meter {
   flex: 1;
   height: 6px;
-  background: var(--card-border);
+  background: var(--rule);
   border-radius: 3px;
   overflow: hidden;
 }
-.mic-meter > #mic-meter-bar {
+.test-row > .meter > .bar {
   width: 0%;
   height: 100%;
   background: var(--good);

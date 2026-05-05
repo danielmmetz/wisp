@@ -10,8 +10,109 @@
     </head>
     <body>
         <header class="site-header">
-            <a id="brand" href="/" class="brand">wisp</a>
-            <p class="tagline">privacy conscious chat</p>
+            <div class="site-header-left">
+                <a id="brand" href="/" class="brand">
+                    <svg class="brand-glyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+                        <path d="M4 11v2" />
+                        <path d="M8 8v8" />
+                        <path d="M12 5v14" />
+                        <path d="M16 8v8" />
+                        <path d="M20 11v2" />
+                    </svg>
+                    <span class="brand-text">wisp</span>
+                </a>
+                <p class="tagline">privacy conscious chat</p>
+                <code id="room-code-narrow" class="code-narrow"></code>
+                <span id="room-status-narrow" class="status-narrow"></span>
+            </div>
+            <div class="site-header-actions">
+                <button
+                    id="self-mute-narrow"
+                    class="mute-btn header-action"
+                    type="button"
+                    title="Mute"
+                    aria-label="Mute"
+                >
+                    <svg class="icon-mic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="9" y="2" width="6" height="12" rx="3" />
+                        <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
+                        <line x1="12" y1="19" x2="12" y2="22" />
+                    </svg>
+                    <svg class="icon-mic-slash" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <line x1="3" y1="3" x2="21" y2="21" />
+                        <path d="M9 9v3a3 3 0 0 0 5 2.13" />
+                        <path d="M15 9.34V5a3 3 0 0 0-5.94-.6" />
+                        <path d="M19 10v2a7 7 0 0 1-.11 1.23" />
+                        <path d="M5 10v2a7 7 0 0 0 12 5" />
+                        <line x1="12" y1="19" x2="12" y2="22" />
+                    </svg>
+                </button>
+                <button
+                    id="share-narrow"
+                    class="icon-btn header-action share-or-copy"
+                    type="button"
+                    title="Copy join link"
+                    aria-label="Copy join link"
+                >
+                    <svg class="ic-copy" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <svg class="ic-share" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                        <polyline points="16 6 12 2 8 6" />
+                        <line x1="12" y1="2" x2="12" y2="15" />
+                    </svg>
+                </button>
+                <button
+                    id="self-leave-narrow"
+                    class="leave-btn icon-btn header-action"
+                    type="button"
+                    title="Leave room"
+                    aria-label="Leave room"
+                >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                        <polyline points="16 17 21 12 16 7" />
+                        <line x1="21" y1="12" x2="9" y2="12" />
+                    </svg>
+                </button>
+                <button
+                    id="audio-gear"
+                    class="icon-btn gear-btn"
+                    type="button"
+                    title="Audio settings"
+                    aria-label="Audio settings"
+                    aria-expanded="false"
+                    aria-controls="audio-popover"
+                >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                </button>
+            </div>
+            <div id="audio-popover" class="popover" role="dialog" aria-label="Audio settings" hidden>
+                <div class="pop-head">Audio</div>
+                <label class="pop-row">
+                    <span class="lbl">Microphone</span>
+                    <select id="mic-select">
+                        <option value="">(system default)</option>
+                    </select>
+                </label>
+                <label class="pop-row">
+                    <span class="lbl">Speaker</span>
+                    <select id="speaker-select">
+                        <option value="">(system default)</option>
+                    </select>
+                </label>
+                <div class="test-row">
+                    <button id="mic-test" type="button" class="ghost">test mic</button>
+                    <div class="meter" aria-hidden="true">
+                        <div id="mic-meter-bar" class="bar"></div>
+                    </div>
+                </div>
+            </div>
         </header>
         <main id="root">
             <section id="lobby" class="card">
@@ -41,89 +142,123 @@
                     <button type="submit">Join</button>
                 </form>
                 <p id="lobby-error" class="error" hidden></p>
-
-                <details id="audio-settings" class="settings">
-                    <summary>Audio settings</summary>
-                    <label class="setting">
-                        <span class="setting-label">Microphone</span>
-                        <select id="mic-select">
-                            <option value="">(system default)</option>
-                        </select>
-                    </label>
-                    <label class="setting">
-                        <span class="setting-label">Speaker</span>
-                        <select id="speaker-select">
-                            <option value="">(system default)</option>
-                        </select>
-                    </label>
-                    <div class="setting mic-test-row">
-                        <button id="mic-test" type="button" class="ghost">test mic</button>
-                        <div class="mic-meter" aria-hidden="true">
-                            <div id="mic-meter-bar"></div>
-                        </div>
-                    </div>
-                </details>
             </section>
 
-            <section id="room" class="card" hidden>
-                <header class="room-head">
-                    <div class="room-head-left">
-                        <code id="room-code"></code>
-                        <span id="room-status" class="muted"></span>
-                    </div>
-                    <div class="room-head-right">
+            <section id="room" hidden>
+                <aside class="rail">
+                    <header class="rail-head">
+                        <div class="rail-head-id">
+                            <code id="room-code" class="code"></code>
+                            <span id="room-status" class="meta"></span>
+                        </div>
                         <button
                             id="copy-link"
-                            class="icon-btn"
+                            class="icon-btn share-or-copy"
                             type="button"
                             title="Copy join link"
                             aria-label="Copy join link"
                         >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <svg class="ic-copy" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                             </svg>
+                            <svg class="ic-share" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                                <polyline points="16 6 12 2 8 6" />
+                                <line x1="12" y1="2" x2="12" y2="15" />
+                            </svg>
                         </button>
-                        <button id="leave-btn" class="danger">Leave</button>
+                    </header>
+                    <nav class="room-tabs" role="tablist" aria-label="Room view">
+                        <button
+                            id="tab-users"
+                            type="button"
+                            role="tab"
+                            data-tab="users"
+                            aria-controls="peers"
+                            aria-selected="false"
+                        >Users<span id="tab-users-count" class="tab-count"></span></button>
+                        <button
+                            id="tab-chat"
+                            type="button"
+                            role="tab"
+                            data-tab="chat"
+                            aria-controls="chat-messages"
+                            aria-selected="true"
+                        >Chat</button>
+                    </nav>
+                    <ul id="peers" class="rail-list" role="tabpanel" aria-labelledby="tab-users">
+                        <li id="self-peer-row" class="peer self">
+                            <span class="dot" aria-hidden="true"></span>
+                            <span id="self-peer-name" class="nm editable" title="Click to rename"></span>
+                        </li>
+                    </ul>
+                    <div class="rail-self">
+                        <div class="id">
+                            <strong id="self-name" class="editable" title="Click to rename"></strong>
+                            <span id="self-quality" class="qmeta"></span>
+                        </div>
+                        <div class="ctrls">
+                            <button
+                                id="self-mute"
+                                class="mute-btn"
+                                type="button"
+                                title="Mute"
+                                aria-label="Mute"
+                            >
+                                <svg class="icon-mic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <rect x="9" y="2" width="6" height="12" rx="3" />
+                                    <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
+                                    <line x1="12" y1="19" x2="12" y2="22" />
+                                </svg>
+                                <svg class="icon-mic-slash" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <line x1="3" y1="3" x2="21" y2="21" />
+                                    <path d="M9 9v3a3 3 0 0 0 5 2.13" />
+                                    <path d="M15 9.34V5a3 3 0 0 0-5.94-.6" />
+                                    <path d="M19 10v2a7 7 0 0 1-.11 1.23" />
+                                    <path d="M5 10v2a7 7 0 0 0 12 5" />
+                                    <line x1="12" y1="19" x2="12" y2="22" />
+                                </svg>
+                            </button>
+                            <button
+                                id="leave-btn"
+                                class="leave-btn icon-btn"
+                                type="button"
+                                title="Leave room"
+                                aria-label="Leave room"
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                                    <polyline points="16 17 21 12 16 7" />
+                                    <line x1="21" y1="12" x2="9" y2="12" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
-                </header>
-                <div class="room-body">
-                    <div class="peers-pane">
-                        <ul id="peers"></ul>
-                    </div>
-                    <div
-                        id="pane-resizer"
-                        class="pane-resizer"
-                        role="separator"
-                        aria-orientation="vertical"
-                        aria-label="Resize peers pane"
-                        tabindex="0"
-                    ></div>
-                    <div class="chat-pane">
-                        <div class="chat-header">chat</div>
-                        <ul id="chat-messages" class="chat-scroll"></ul>
-                        <form id="chat-form" class="chat-compose" autocomplete="off">
-                            <input
-                                id="chat-input"
-                                type="text"
-                                placeholder="message the room…"
-                                maxlength="2000"
-                                autocomplete="off"
-                                spellcheck="false"
-                            />
-                            <button type="submit" class="primary">Send</button>
-                        </form>
-                    </div>
-                </div>
+                </aside>
+                <div class="vrule" aria-hidden="true"></div>
+                <main class="chat" role="tabpanel" aria-labelledby="tab-chat">
+                    <ul id="chat-messages" class="chat-scroll"></ul>
+                    <form id="chat-form" class="chat-compose" autocomplete="off">
+                        <input
+                            id="chat-input"
+                            type="text"
+                            maxlength="2000"
+                            autocomplete="off"
+                            spellcheck="false"
+                            aria-label="Message"
+                        />
+                        <button type="submit" class="primary">Send</button>
+                    </form>
+                </main>
             </section>
         </main>
 
         <template id="peer-row">
             <li class="peer">
-                <span class="indicator" aria-hidden="true"></span>
-                <span class="name"></span>
-                <span class="transport" aria-hidden="true"></span>
-                <span class="quality" title="connection quality"></span>
+                <span class="dot" aria-hidden="true"></span>
+                <span class="nm"></span>
+                <span class="badge transport"></span>
                 <span class="cipher" aria-hidden="true"></span>
                 <div class="peer-extra">
                     <input type="range" min="0" max="200" value="100" class="vol" />
@@ -148,19 +283,16 @@
 
         <template id="chat-message">
             <li class="msg">
-                <div class="head">
+                <span class="head-line">
                     <span class="who"></span>
-                    <span class="sep">·</span>
-                    <span class="time"></span>
-                </div>
-                <div class="body"></div>
+                    <span class="body"></span>
+                </span>
+                <span class="time"></span>
             </li>
         </template>
 
         <template id="chat-system">
-            <li class="msg system">
-                <div class="body"></div>
-            </li>
+            <li class="msg system"></li>
         </template>
 
         <script type="module" src="/app.js"></script>

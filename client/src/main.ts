@@ -15,13 +15,14 @@ import {
   appendChatMessage,
   appendChatSystem,
   appendPeerRow,
+  bindSelfBlock,
   clearChat,
   createMicLevelMeter,
   fillDeviceSelect,
   makePeerRow,
-  prependPeerRow,
   renameChatAuthor,
   setLobbyError,
+  setPeerCount,
   setRoomStatus,
   shareLink,
   showLobby,
@@ -29,11 +30,12 @@ import {
 } from "./ui.ts";
 import type { MicCapture } from "./audio.ts";
 import type { PeerStats } from "./peer.ts";
-import type { PeerRowHandle, MicLevelMeter } from "./ui.ts";
+import type { PeerRowHandle, MicLevelMeter, SelfBlockHandle } from "./ui.ts";
 
 let room: Room | null = null;
 let mic: MicCapture | null = null;
 const rows = new Map<string, PeerRowHandle>();
+let selfBlock: SelfBlockHandle | null = null;
 let qualityTimer: number | null = null;
 let localId: string | null = null;
 
@@ -101,24 +103,29 @@ async function refreshDevicePickers(): Promise<void> {
   if (outSel) fillDeviceSelect(outSel, devices.outputs, prefs.outputDeviceId);
 }
 
+// Peer count surfaced on the rail-meta line. We include self in the total
+// even though self isn't in the .rail-list — it matches what a user counts
+// as "people in this room".
+function refreshPeerCount(): void {
+  setPeerCount(rows.size + (localId ? 1 : 0));
+}
+
 function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
   return {
     onJoined: ({ code, localId: id, name }) => {
       localId = id;
       showRoom(code);
       setRoomStatus("Connecting…");
-      const row = makePeerRow({
-        id,
+      selfBlock = bindSelfBlock({
         name,
-        isSelf: true,
         onMuteToggle: (m) => mic?.setMuted(m),
         onRenameRequest: (next) => {
           room?.rename(next);
         },
+        onLeaveRequest: () => leaveRoom(),
       });
-      row.setQuality("unknown");
-      rows.set(id, row);
-      prependPeerRow(row);
+      selfBlock.setQuality("good");
+      refreshPeerCount();
       startQualityPolling();
     },
     onPeerAdded: (id, name) => {
@@ -126,7 +133,6 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       const row = makePeerRow({
         id,
         name,
-        isSelf: false,
         onMuteToggle: (m) => {
           const stream = remoteStreams.get(id);
           if (stream) {
@@ -137,6 +143,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       row.setQuality("unknown");
       rows.set(id, row);
       appendPeerRow(row);
+      refreshPeerCount();
       // Suppress the system line during initial-room population: localId is
       // still null until onJoined fires, which happens after the existing
       // peers are walked. Genuine peer_joined arrivals fire afterwards with
@@ -147,10 +154,15 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.destroy();
       rows.delete(id);
       remoteStreams.delete(id);
+      refreshPeerCount();
       if (name) appendChatSystem(`${name} left`);
     },
     onPeerRenamed: (id, name) => {
-      rows.get(id)?.setName(name);
+      if (id === localId) {
+        selfBlock?.setName(name);
+      } else {
+        rows.get(id)?.setName(name);
+      }
       renameChatAuthor(id, name);
     },
     onRemoteStream: (id, stream) => {
@@ -158,6 +170,9 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.attach(stream);
     },
     onSpeakingChange: (id, speaking) => {
+      // Self's speaking transitions are intentionally not surfaced — the
+      // user knows when they're talking. Only mark remote rows.
+      if (id === localId) return;
       rows.get(id)?.setSpeaking(speaking);
     },
     onConnectionState: (id, state) => {
@@ -182,7 +197,6 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
         name: msg.name,
         body: msg.body,
         ts: msg.ts,
-        self: msg.isSelf,
       });
     },
     onReconnecting: (attempt) => {
@@ -199,7 +213,11 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.clear();
       remoteStreams.clear();
       clearChat();
+      selfBlock?.reset();
+      selfBlock = null;
       localId = null;
+      setPeerCount(0);
+      setRoomStatus("");
       releaseMic();
       showLobby();
       setLobbyError(reason === "user left" ? null : `Disconnected: ${reason}`);
@@ -298,94 +316,55 @@ async function copyLink(): Promise<void> {
   }
 }
 
+// initShareSupport flips a body class once at startup based on whether the
+// browser exposes navigator.share. CSS uses the class to swap each share-
+// or-copy button's icon between a share arrow and a clipboard glyph; we
+// also retitle the buttons here so the tooltip matches the action.
+function initShareSupport(): void {
+  type Nav = Navigator & { share?: unknown };
+  if (typeof (navigator as Nav).share !== "function") return;
+  document.body.classList.add("share-supported");
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".share-or-copy")) {
+    b.title = "Share room link";
+    b.setAttribute("aria-label", "Share room link");
+  }
+}
+
+// shareRoom uses the Web Share API where available (mobile, mostly), so the
+// user gets the native share sheet. On unsupported platforms it falls
+// through to copy-to-clipboard with the same status feedback as copyLink.
+async function shareRoom(): Promise<void> {
+  const code = ($("#room-code") as HTMLElement).textContent ?? "";
+  if (!code) return;
+  const url = shareLink(code);
+  type Nav = Navigator & { share?: (data: { title?: string; text?: string; url?: string }) => Promise<void> };
+  const nav = navigator as Nav;
+  if (typeof nav.share === "function") {
+    try {
+      await nav.share({ title: "wisp", text: `Join me on wisp: ${code}`, url });
+      return;
+    } catch (err) {
+      // AbortError = user cancelled the share sheet; treat as a no-op.
+      if (err instanceof Error && err.name === "AbortError") return;
+      // any other error: fall through to clipboard so the user still gets a link
+    }
+  }
+  await copyLink();
+}
+
 function leaveRoom(): void {
+  // Push a new history entry for the lobby URL before tearing the room
+  // down. Pressing Back from the lobby afterwards lands on the old room
+  // URL, which the popstate handler treats as a join request — so Back
+  // really does take you back into the room you just left. Disconnect /
+  // error paths flow through showLobby's replaceState instead, which
+  // doesn't grow history.
+  const u = new URL(location.href);
+  if (u.searchParams.has("room")) {
+    u.searchParams.delete("room");
+    history.pushState(null, "", u.pathname + u.search);
+  }
   room?.leave();
-}
-
-// initPaneResizer wires the vertical drag handle between the peers and chat
-// panes. Width is persisted in localStorage; on first load we use the CSS
-// default. The handle is hidden by CSS below the side-by-side breakpoint.
-const PEERS_WIDTH_KEY = "wisp.peersWidth";
-const PEERS_WIDTH_MIN = 180;
-const PEERS_WIDTH_MAX = 520;
-function initPaneResizer(): void {
-  const handle = document.querySelector<HTMLElement>("#pane-resizer");
-  const body = document.querySelector<HTMLElement>(".room-body");
-  if (!handle || !body) return;
-
-  // Restore persisted width.
-  try {
-    const saved = localStorage.getItem(PEERS_WIDTH_KEY);
-    if (saved) {
-      const px = clampPeersWidth(Number(saved));
-      if (Number.isFinite(px)) body.style.setProperty("--peers-width", `${px}px`);
-    }
-  } catch { /* localStorage unavailable */ }
-
-  let dragging = false;
-  let pointerId: number | null = null;
-
-  const onMove = (ev: PointerEvent) => {
-    if (!dragging) return;
-    // The pane width equals the horizontal distance from room-body's left
-    // edge to the cursor. clientX accounts for any page scroll already.
-    const rect = body.getBoundingClientRect();
-    const px = clampPeersWidth(ev.clientX - rect.left);
-    body.style.setProperty("--peers-width", `${px}px`);
-  };
-
-  const stop = (ev: PointerEvent) => {
-    if (!dragging) return;
-    dragging = false;
-    handle.classList.remove("dragging");
-    document.body.classList.remove("resizing");
-    if (pointerId !== null) {
-      try { handle.releasePointerCapture(pointerId); } catch { /* ignore */ }
-      pointerId = null;
-    }
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", stop);
-    window.removeEventListener("pointercancel", stop);
-    // Persist current width so the layout sticks across reloads.
-    const px = body.style.getPropertyValue("--peers-width").replace("px", "").trim();
-    if (px) {
-      try { localStorage.setItem(PEERS_WIDTH_KEY, px); } catch { /* ignore */ }
-    }
-    void ev;
-  };
-
-  handle.addEventListener("pointerdown", (ev) => {
-    dragging = true;
-    pointerId = ev.pointerId;
-    try { handle.setPointerCapture(ev.pointerId); } catch { /* older browsers */ }
-    handle.classList.add("dragging");
-    document.body.classList.add("resizing");
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
-    ev.preventDefault();
-  });
-
-  // Keyboard nudges for accessibility — the handle is focusable as a
-  // role=separator. Each press moves 16px; Shift jumps 64px.
-  handle.addEventListener("keydown", (ev) => {
-    const step = ev.shiftKey ? 64 : 16;
-    let delta = 0;
-    if (ev.key === "ArrowLeft") delta = -step;
-    else if (ev.key === "ArrowRight") delta = step;
-    else return;
-    ev.preventDefault();
-    const current = parseFloat(getComputedStyle(body).getPropertyValue("--peers-width")) ||
-      body.querySelector<HTMLElement>(".peers-pane")?.offsetWidth || 0;
-    const next = clampPeersWidth(current + delta);
-    body.style.setProperty("--peers-width", `${next}px`);
-    try { localStorage.setItem(PEERS_WIDTH_KEY, String(next)); } catch { /* ignore */ }
-  });
-}
-
-function clampPeersWidth(px: number): number {
-  if (!Number.isFinite(px)) return PEERS_WIDTH_MIN;
-  return Math.max(PEERS_WIDTH_MIN, Math.min(PEERS_WIDTH_MAX, px));
 }
 
 // initSettings wires the device pickers and the mic test button. Test mic
@@ -431,6 +410,76 @@ function initSettings(): void {
   }
 }
 
+// initRoomTabs wires the People / Chat tabs that only show on narrow
+// viewports. The room is split into two panes there because stacking
+// peers above a chat scroll is awkward — tabs let one fill the screen
+// while the compose stays anchored at the bottom of the chat tab.
+function initRoomTabs(): void {
+  const room = document.querySelector<HTMLElement>("#room");
+  const tabs = document.querySelectorAll<HTMLButtonElement>(".room-tabs button");
+  if (!room || tabs.length === 0) return;
+
+  const setTab = (name: string) => {
+    room.classList.toggle("tab-users", name === "users");
+    room.classList.toggle("tab-chat", name === "chat");
+    tabs.forEach((t) => {
+      const active = t.dataset.tab === name;
+      t.classList.toggle("active", active);
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  };
+
+  // Chat is the default — it's what most people want to glance at while
+  // a call is running. Switching to Users is a deliberate "who's here?"
+  // moment.
+  setTab("chat");
+
+  tabs.forEach((t) => {
+    t.addEventListener("click", () => {
+      const name = t.dataset.tab;
+      if (name) setTab(name);
+    });
+  });
+}
+
+// initAudioPopover wires the gear button's open/close behavior. The
+// popover is anchored under the gear in the site header so it persists
+// across the lobby and room views — useful for switching mics mid-call.
+function initAudioPopover(): void {
+  const gear = document.querySelector<HTMLButtonElement>("#audio-gear");
+  const pop = document.querySelector<HTMLElement>("#audio-popover");
+  if (!gear || !pop) return;
+
+  const setOpen = (open: boolean) => {
+    pop.hidden = !open;
+    gear.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+
+  gear.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    setOpen(pop.hidden);
+  });
+
+  // Click outside the popover (and not on the gear) closes it. We listen
+  // on the document so the handler catches clicks anywhere in the app.
+  document.addEventListener("click", (ev) => {
+    if (pop.hidden) return;
+    const target = ev.target as Node | null;
+    if (target && (pop.contains(target) || gear.contains(target))) return;
+    setOpen(false);
+  });
+
+  // Esc closes if the popover is open. We don't preventDefault on other
+  // keys — Escape inside a select shouldn't close, but selects open as
+  // native menus and intercept their own Escape handling first.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !pop.hidden) {
+      setOpen(false);
+      gear.focus();
+    }
+  });
+}
+
 async function switchInputDevice(): Promise<void> {
   // Restart mic with the new device. We replace tracks on every existing
   // peer so audio continues without renegotiation. Self-VAD continues to
@@ -458,6 +507,8 @@ function init(): void {
   void preloadNoiseSuppression();
 
   initSettings();
+  initAudioPopover();
+  initRoomTabs();
 
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.
@@ -471,7 +522,13 @@ function init(): void {
     void startJoin(code);
   });
   $("#leave-btn").addEventListener("click", leaveRoom);
-  $("#copy-link").addEventListener("click", () => void copyLink());
+  // Both share-or-copy buttons (rail-head on wide, site-header on narrow)
+  // run shareRoom; it falls back to copyLink when the Web Share API isn't
+  // available. The visible icon is swapped via CSS using body.share-supported.
+  $("#copy-link").addEventListener("click", () => void shareRoom());
+  document.querySelector<HTMLButtonElement>("#share-narrow")
+    ?.addEventListener("click", () => void shareRoom());
+  initShareSupport();
   $("#chat-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const input = $("#chat-input") as HTMLInputElement;
@@ -479,7 +536,6 @@ function init(): void {
     if (!room || !text.trim()) return;
     if (room.sendChat(text)) input.value = "";
   });
-  initPaneResizer();
   $("#brand").addEventListener("click", (ev) => {
     if (!room) return;
     ev.preventDefault();
