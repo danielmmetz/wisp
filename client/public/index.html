@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="dark light" />
+        <title>wisp</title>
+        <link rel="stylesheet" href="/style.css" />
+        <link rel="icon" href="data:," />
+    </head>
+    <body>
+        <main id="root">
+            <section id="lobby" class="card">
+                <h1>wisp</h1>
+                <p class="lede">Privacy conscious chat.</p>
+                <label class="field">
+                    <span class="field-label">Your name</span>
+                    <input
+                        id="name-input"
+                        name="name"
+                        placeholder="otter"
+                        autocomplete="off"
+                        spellcheck="false"
+                        maxlength="32"
+                    />
+                </label>
+                <div class="row">
+                    <button id="create-btn" class="primary">
+                        Start a new room
+                    </button>
+                </div>
+                <div class="divider"><span>or</span></div>
+                <form id="join-form" class="row">
+                    <input
+                        id="join-code"
+                        name="code"
+                        placeholder="velvet-otter"
+                        autocomplete="off"
+                        spellcheck="false"
+                        required
+                    />
+                    <button type="submit">Join</button>
+                </form>
+                <p id="lobby-error" class="error" hidden></p>
+            </section>
+
+            <section id="room" class="card" hidden>
+                <header class="room-head">
+                    <div>
+                        <span class="muted">room</span>
+                        <code id="room-code"></code>
+                        <button
+                            id="copy-link"
+                            class="ghost"
+                            title="Copy join link"
+                        >
+                            copy link
+                        </button>
+                    </div>
+                    <button id="leave-btn" class="danger">Leave</button>
+                </header>
+                <ul id="peers"></ul>
+                <p id="room-status" class="muted"></p>
+            </section>
+        </main>
+
+        <template id="peer-row">
+            <li class="peer">
+                <span class="indicator" aria-hidden="true"></span>
+                <span class="name"></span>
+                <span class="quality" title="connection quality"></span>
+                <span class="transport" aria-hidden="true"></span>
+                <input type="range" min="0" max="200" value="100" class="vol" />
+                <button class="mute ghost">mute</button>
+            </li>
+        </template>
+
+        <script type="module" src="/app.js"></script>
+    </body>
+</html>
