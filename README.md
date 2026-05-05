@@ -10,7 +10,7 @@ Anyone can share their screen — one presenter at a time, up to 1080p. Pick `Do
 
 Voice activity is detected automatically, with adaptive thresholds that track each mic's noise floor so quiet and loud rooms both work. Each visit you're a fresh anonymous animal name, renamable in-room.
 
-Noise suppression runs client-side via DeepFilterNet3 in WebAssembly, layered on top of the browser's built-in NS. Keyboard tapping, fans, and most non-stationary background noise stay out of the call. Always on, no toggle.
+Noise suppression runs client-side via DeepFilterNet3 in WebAssembly. The browser's spectral NS and AGC are switched off when DFN3 is active so the neural model gets a clean signal — keyboard tapping, fans, and most non-stationary background noise stay out of the call. Always on, no toggle.
 
 Voice bitrate adapts to observed loss (24–64 kbps) and RED forward-error-correction rides out short loss bursts. Signaling drops auto-reconnect with backoff; a failed peer connection gets one ICE restart before being declared gone. A per-peer good/degraded/poor indicator reflects loss and RTT.
 
