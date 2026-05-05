@@ -6,14 +6,14 @@
 //   getUserMedia → MediaStreamSource → DFN3 worklet → MediaStreamDestination
 //                                                   → outbound MediaStreamTrack
 //
-// When DFN3 is in use we ask getUserMedia for a clean stream — browser-level
-// noiseSuppression and autoGainControl are disabled. Stacking the browser's
-// spectral NS + AGC under DFN3's neural model produced robotic-sounding voice:
-// AGC kept retargeting the level under DFN3's feet, and two NS layers ate
-// into voice components. Echo cancellation stays on; it needs the OS speaker
-// reference signal that we can't supply from WebAudio. If DFN3 fails to load
-// we fall back to a stream with browser NS+AGC on so the call still sounds
-// reasonable without it.
+// When DFN3 is in use we want a clean signal — stacking the browser's
+// spectral NS + AGC under DFN3's neural model produced robotic-sounding
+// voice (AGC kept retargeting the level under DFN3's feet, and two NS
+// layers ate into voice components). We open the mic with browser NS+AGC
+// ON so getUserMedia is the first await off the user gesture (Firefox
+// loses user-activation otherwise), then flip them off via applyConstraints
+// once DFN3 is ready. Echo cancellation stays on; it needs the OS speaker
+// reference signal that we can't supply from WebAudio.
 //
 // ?nons=1 in the URL skips the worklet and uses the browser's NS+AGC chain
 // only — useful for isolating an echo complaint from the DFN3 layer in a
@@ -36,6 +36,15 @@ function ctx(): AudioContext {
         void sharedCtx.resume();
       }
     });
+  }
+  // Browsers that follow the autoplay policy can create the context in
+  // "suspended" if the call lands outside a user-activation window. Once
+  // we've reached this point, our caller is wiring up audio and silently
+  // staying suspended would mean no playback. resume() is best-effort —
+  // a no-op if the context is already running, and rejected if there's
+  // truly no gesture available (in which case we'd have other problems).
+  if (sharedCtx.state === "suspended") {
+    void sharedCtx.resume().catch(() => { /* needs a gesture; surface elsewhere */ });
   }
   return sharedCtx;
 }
@@ -82,17 +91,16 @@ function noNS(): boolean {
 }
 
 export async function startMic(opts: MicOptions = {}): Promise<MicCapture> {
-  // Resolve DFN3 readiness before getUserMedia so we can pick the right
-  // browser-side processing. preloadNoiseSuppression memoizes — this awaits
-  // the same in-flight promise that main.ts kicked off at page load.
-  const dfn = noNS() ? null : await preloadNoiseSuppression();
-  const useDfn = dfn !== null;
-
+  // getUserMedia must be the first thing awaited from a user-gesture click
+  // handler — otherwise Firefox loses the transient user-activation token
+  // (and Chrome eventually does too) and the permission grant silently
+  // fails. We open the mic with browser NS+AGC ON and only flip them off
+  // afterward via applyConstraints once we know DFN3 is taking over.
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
-      noiseSuppression: !useDfn,
-      autoGainControl: !useDfn,
+      noiseSuppression: true,
+      autoGainControl: true,
       channelCount: 1,
       sampleRate: SAMPLE_RATE,
       ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
@@ -105,11 +113,27 @@ export async function startMic(opts: MicOptions = {}): Promise<MicCapture> {
   let teardown: (() => void) | null = null;
   let outboundTrack: MediaStreamTrack = rawTrack;
 
-  if (useDfn) {
-    const built = await buildNS(ctx(), stream, dfn);
-    if (built) {
-      outboundTrack = built.track;
-      teardown = built.close;
+  if (!noNS()) {
+    const dfn = await preloadNoiseSuppression();
+    if (dfn) {
+      // DFN3 is taking over — turn off the browser's spectral NS and AGC so
+      // the neural model gets a clean signal. applyConstraints can fail or
+      // be a no-op on some browsers; if it does, DFN3 still runs but stacked
+      // on top of browser NS, which sounds robotic but isn't broken.
+      try {
+        await rawTrack.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false,
+        });
+      } catch (err) {
+        console.warn("applyConstraints to disable browser NS+AGC failed", err);
+      }
+      const built = await buildNS(ctx(), stream, dfn);
+      if (built) {
+        outboundTrack = built.track;
+        teardown = built.close;
+      }
     }
   }
 
@@ -255,6 +279,39 @@ export function observeSpeaking(
   }, intervalMs);
   return () => {
     clearInterval(timer);
+    source.disconnect();
+  };
+}
+
+// observeMicLevel emits a 0..1 level (mapped from -60dB..-10dB RMS) on
+// every animation frame. Used by the lobby's mic-test bar. Runs on the
+// shared AudioContext so it stays alive across the gesture window — a
+// fresh AudioContext created mid-async-handler can start suspended and
+// produce silence even though the mic is fine.
+export function observeMicLevel(
+  track: MediaStreamTrack,
+  onLevel: (level01: number) => void,
+): () => void {
+  const audioCtx = ctx();
+  const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  let raf = 0;
+  const tick = () => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (const v of buf) sum += v * v;
+    const rms = Math.sqrt(sum / buf.length);
+    const db = 20 * Math.log10(rms || 1e-9);
+    const level = Math.max(0, Math.min(1, (db + 60) / 50));
+    onLevel(level);
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  return () => {
+    cancelAnimationFrame(raf);
     source.disconnect();
   };
 }

@@ -1,6 +1,6 @@
 // DOM helpers for the lobby and room screens. Stays vanilla; no framework.
 
-import { attachRemoteStream, observeSpeaking, type AudioDevice } from "./audio.ts";
+import { attachRemoteStream, observeMicLevel, observeSpeaking, type AudioDevice } from "./audio.ts";
 import { MAX_NAME_LEN } from "./wire.ts";
 
 export interface PeerRowOptions {
@@ -750,32 +750,11 @@ export function createMicLevelMeter(barEl: HTMLElement): MicLevelMeter {
   return {
     start: (track) => {
       stop?.();
-      // Reuse observeSpeaking's analyser pipeline by attaching a separate
-      // raf loop; observeSpeaking only emits transitions, but we want a
-      // continuous level. Inline the analyser here for simplicity.
-      const ctx = new AudioContext();
-      const source = ctx.createMediaStreamSource(new MediaStream([track]));
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-      const buf = new Float32Array(analyser.fftSize);
-      let raf = 0;
-      const tick = () => {
-        analyser.getFloatTimeDomainData(buf);
-        let sum = 0;
-        for (const v of buf) sum += v * v;
-        const rms = Math.sqrt(sum / buf.length);
-        // Map -60dB..-10dB to 0..100%.
-        const db = 20 * Math.log10(rms || 1e-9);
-        const pct = Math.max(0, Math.min(1, (db + 60) / 50)) * 100;
-        barEl.style.width = `${pct}%`;
-        raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
+      const release = observeMicLevel(track, (level) => {
+        barEl.style.width = `${level * 100}%`;
+      });
       stop = () => {
-        cancelAnimationFrame(raf);
-        source.disconnect();
-        void ctx.close();
+        release();
         barEl.style.width = "0%";
       };
     },
