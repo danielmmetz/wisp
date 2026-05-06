@@ -831,54 +831,19 @@ input.name-edit {
   .msg-menu-item-danger { color: #ff6b5a; }
 }
 
-/* Inline editor and inline delete-confirm. Both swap in for the .body span
- * inside .head-line and keep the row's column geometry intact. */
-.msg-editor {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
-  width: 100%;
-  margin-top: 2px;
-}
-.msg-editor-input {
-  flex: 1 1 12em;
-  min-width: 0;
-  font: inherit;
-  padding: 4px 6px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.2));
-  border-radius: 4px;
-  background: var(--bg, #fff);
-  color: var(--fg);
-  resize: vertical;
-}
-.msg-editor-save,
-.msg-editor-cancel {
-  appearance: none;
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
-  background: var(--bg, #fff);
-  color: var(--fg);
-  cursor: pointer;
-  min-height: 32px;
-}
-.msg-editor-save.primary {
-  background: var(--accent, #2a6df4);
-  border-color: var(--accent, #2a6df4);
-  color: #fff;
-}
-
-/* Confirm-delete popover: a single checkmark sized to drop directly below
- * the kebab. Cancellation is the usual outside-click / Esc — no explicit
- * cancel button keeps it minimal. */
+/* Confirm-delete popover: a single checkmark sized to match the kebab box
+ * exactly (24x24, same border-radius). The popover itself is borderless
+ * and transparent so the inner button is the only thing visible — visually
+ * the kebab "morphs" into a checkmark in place. Cancellation is the usual
+ * outside-click / Esc — no explicit cancel button keeps it minimal. */
 .msg-menu.msg-menu-confirm {
   flex-direction: row;
-  padding: 4px;
+  padding: 0;
   gap: 0;
   min-width: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 .msg-menu-icon-btn {
   appearance: none;
@@ -886,8 +851,8 @@ input.name-edit {
   border: 1px solid var(--rule, rgba(0, 0, 0, 0.18));
   border-radius: 6px;
   padding: 0;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -911,6 +876,30 @@ input.name-edit {
   background: var(--bad, #c53030);
   color: #fff;
   filter: brightness(1.06);
+}
+
+/* Editing state: the row whose message is currently in the bottom composer.
+ * Subtle highlight + suppress the kebab so the only way to bail is via the
+ * banner above the composer (or Esc while focused there). */
+.msg.editing { background: var(--accent-soft, rgba(37, 99, 235, 0.08)); }
+.msg.editing .msg-menu-btn { display: none; }
+
+/* Banner that sits above the composer while edit mode is active. Slim and
+ * unobtrusive, matches the chat column width. */
+.chat-edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  border-top: 1px solid var(--rule);
+  background: var(--card-2, var(--card));
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.chat-edit-banner-cancel {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.5rem;
 }
 .msg.system {
   grid-column: 1 / -1;

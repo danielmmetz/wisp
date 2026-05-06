@@ -432,32 +432,18 @@ export function appendChatMessage(opts: {
 }
 
 // editChatMessage rewrites the body of a previously-rendered message and
-// appends a small "(edited)" tag near the timestamp. No-op if the id was
-// never rendered (the recipient may have joined after the original send,
-// or the message was already deleted).
+// appends a small "(edited)" tag at the end of the body line. No-op if
+// the id was never rendered (the recipient may have joined after the
+// original send) or the message was already deleted.
 export function editChatMessage(id: string, body: string, _editedTs: number): void {
   const list = document.querySelector<HTMLElement>("#chat-messages");
   if (!list) return;
   const node = list.querySelector<HTMLElement>(`.msg[data-id="${cssEscape(id)}"]`);
   if (!node || node.classList.contains("deleted")) return;
-  // If the message is currently being edited locally, fold the in-flight
-  // editor; the broadcast author and the local user are the same person,
-  // so this only happens when an editor was open and the room layer just
-  // applied our own edit.
-  const editor = node.querySelector<HTMLElement>(".msg-editor");
-  editor?.remove();
   const bodyEl = node.querySelector<HTMLElement>(".body");
   if (bodyEl) {
     bodyEl.dataset.source = body;
     bodyEl.innerHTML = renderMarkdown(body);
-    bodyEl.hidden = false;
-  }
-  // Restore the kebab affordance — startInlineEdit hid it while the editor
-  // was open, and the success path skipped restore() in favor of waiting
-  // for this callback to clean up.
-  if (node.classList.contains("own")) {
-    const btn = node.querySelector<HTMLButtonElement>(".msg-menu-btn");
-    if (btn) btn.hidden = false;
   }
   ensureEditedTag(node);
 }
@@ -471,13 +457,8 @@ export function deleteChatMessage(id: string): void {
   const node = list.querySelector<HTMLElement>(`.msg[data-id="${cssEscape(id)}"]`);
   if (!node) return;
   node.classList.add("deleted");
-  const editor = node.querySelector<HTMLElement>(".msg-editor");
-  editor?.remove();
   const bodyEl = node.querySelector<HTMLElement>(".body");
-  if (bodyEl) {
-    bodyEl.textContent = "(message deleted)";
-    bodyEl.hidden = false;
-  }
+  if (bodyEl) bodyEl.textContent = "(message deleted)";
   node.querySelector<HTMLElement>(".msg-edited-tag")?.remove();
   node.querySelector<HTMLButtonElement>(".msg-menu-btn")?.remove();
   closeMessageMenu();
@@ -498,7 +479,6 @@ function ensureEditedTag(node: HTMLElement): void {
 // Single live popover and its anchor. We only ever show one menu at a time,
 // so a module-level handle is simpler than per-row state.
 interface ChatActionHandlers {
-  onEdit: (id: string, body: string) => boolean;
   onDelete: (id: string) => boolean;
 }
 let chatActionHandlers: ChatActionHandlers | null = null;
@@ -638,7 +618,7 @@ function openMessageMenu(row: HTMLElement): void {
     }
     if (action === "edit") {
       closeMessageMenu();
-      startInlineEdit(row, id);
+      enterComposerEditMode(row, id);
     } else if (action === "delete") {
       // Morph the popover into a confirm step so the user doesn't have to
       // move the cursor across the row to act on the prompt.
@@ -703,88 +683,125 @@ function closeMessageMenu(): void {
   }
 }
 
-function startInlineEdit(row: HTMLElement, id: string): void {
-  if (row.classList.contains("deleted")) return;
-  if (row.querySelector(".msg-editor")) return;
-  const bodyEl = row.querySelector<HTMLElement>(".body");
-  if (!bodyEl) return;
-  // Pull the markdown source we stashed at append/edit time so the editor
-  // round-trips formatting (otherwise we'd be editing rendered HTML's
-  // textContent, losing the markdown).
-  const original = bodyEl.dataset.source ?? bodyEl.textContent ?? "";
-  bodyEl.hidden = true;
-  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
-  if (btn) btn.hidden = true;
+// ---- Composer (send + edit) ------------------------------------------------
+//
+// The chat composer is the bottom textarea + Send button. We bind it once at
+// startup via bindChatComposer; it routes plain submits to onSend and, while
+// in "edit mode", routes them to onEditSave for the message currently being
+// edited. Picking Edit on a row's kebab menu enters edit mode by stashing
+// any current draft, prefilling the composer with the message's markdown
+// source, and showing a small banner with a Cancel button. Esc cancels;
+// committing or cancelling restores the prior draft.
 
-  const editor = document.createElement("span");
-  editor.className = "msg-editor";
-  const input = document.createElement("textarea");
-  input.value = original;
-  input.maxLength = 2000;
-  input.rows = Math.min(6, Math.max(1, original.split("\n").length));
-  input.className = "msg-editor-input";
-  input.setAttribute("aria-label", "Edit message");
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "msg-editor-save primary";
-  save.textContent = "Save";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "msg-editor-cancel";
-  cancel.textContent = "Cancel";
-  editor.append(input, save, cancel);
-  // Insert directly after the body so it sits in the same head-line flow.
-  bodyEl.parentElement?.insertBefore(editor, bodyEl.nextSibling);
+interface ChatComposerHandlers {
+  // onSend dispatches a fresh message. Returns true if accepted (clears
+  // the composer); false to leave the draft in place.
+  onSend: (text: string) => boolean;
+  // onEditSave broadcasts an edit of `id`. Same return semantics.
+  onEditSave: (id: string, text: string) => boolean;
+}
+let composerHandlers: ChatComposerHandlers | null = null;
+let composerEditState: { id: string; originalDraft: string; row: HTMLElement } | null = null;
 
-  let done = false;
-  const restore = () => {
-    if (done) return;
-    done = true;
-    editor.remove();
-    bodyEl.hidden = false;
-    if (btn) btn.hidden = false;
+export function bindChatComposer(handlers: ChatComposerHandlers): void {
+  composerHandlers = handlers;
+  const chatInput = document.querySelector<HTMLTextAreaElement>("#chat-input");
+  const form = document.querySelector<HTMLFormElement>("#chat-form");
+  const cancelBtn = document.querySelector<HTMLButtonElement>("#chat-edit-cancel");
+  if (!chatInput || !form) return;
+
+  // Auto-grow the textarea as the user types. The CSS max-height caps it
+  // so a long paste starts scrolling in place instead of pushing the
+  // message list off-screen.
+  const autosize = (): void => {
+    chatInput.style.height = "auto";
+    chatInput.style.height = `${chatInput.scrollHeight}px`;
   };
-  const commit = () => {
-    if (done) return;
-    const next = input.value.trim();
-    if (!next) {
-      // Empty: bail without sending. To delete, the user picks Delete.
-      restore();
+  chatInput.addEventListener("input", autosize);
+  chatInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && composerEditState) {
+      ev.preventDefault();
+      cancelComposerEdit();
       return;
     }
-    if (next === original) {
-      restore();
-      return;
-    }
-    const ok = chatActionHandlers?.onEdit(id, next) ?? false;
-    if (!ok) {
-      // Couldn't send (no room, lost authorship after reconnect, etc.).
-      restore();
-      return;
-    }
-    // The room layer fires onChatEdited synchronously, which calls
-    // editChatMessage and removes this editor. Belt-and-suspenders:
-    // restore in case the callback wiring ever changes.
-    done = true;
-  };
+    if (ev.key !== "Enter" || ev.isComposing) return;
+    if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    ev.preventDefault();
+    form.requestSubmit();
+  });
 
-  // Plain Enter saves; Shift/Ctrl/Cmd/Alt+Enter inserts a newline. Matches
-  // the composer's behavior.
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.isComposing) {
-      if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-      ev.preventDefault();
-      commit();
-    } else if (ev.key === "Escape") {
-      ev.preventDefault();
-      restore();
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const text = chatInput.value;
+    if (!text.trim()) return;
+    if (composerEditState) {
+      const editing = composerEditState;
+      const ok = composerHandlers?.onEditSave(editing.id, text) ?? false;
+      if (!ok) return;
+      finishComposerEdit(editing.originalDraft);
+      autosize();
+      return;
+    }
+    if (composerHandlers?.onSend(text)) {
+      chatInput.value = "";
+      autosize();
     }
   });
-  save.addEventListener("click", commit);
-  cancel.addEventListener("click", restore);
 
-  input.focus();
-  input.select();
+  cancelBtn?.addEventListener("click", () => cancelComposerEdit());
+}
+
+function enterComposerEditMode(row: HTMLElement, id: string): void {
+  const bodyEl = row.querySelector<HTMLElement>(".body");
+  if (!bodyEl) return;
+  const original = bodyEl.dataset.source ?? bodyEl.textContent ?? "";
+  const chatInput = document.querySelector<HTMLTextAreaElement>("#chat-input");
+  if (!chatInput) return;
+
+  // If we were already editing a different message, restore that one's
+  // draft before swapping in the new edit. The row's `.editing` class
+  // also moves with us.
+  const priorDraft = composerEditState ? composerEditState.originalDraft : chatInput.value;
+  composerEditState?.row.classList.remove("editing");
+
+  composerEditState = { id, originalDraft: priorDraft, row };
+  row.classList.add("editing");
+
+  chatInput.value = original;
+  // Trigger autosize via the input event handler.
+  chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+  setEditBannerVisible(true);
+  updateComposerSubmitLabel(true);
+
+  chatInput.focus();
+  chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+}
+
+function cancelComposerEdit(): void {
+  if (!composerEditState) return;
+  finishComposerEdit(composerEditState.originalDraft);
+}
+
+function finishComposerEdit(restoreValue: string): void {
+  const state = composerEditState;
+  composerEditState = null;
+  state?.row.classList.remove("editing");
+  setEditBannerVisible(false);
+  updateComposerSubmitLabel(false);
+  const chatInput = document.querySelector<HTMLTextAreaElement>("#chat-input");
+  if (!chatInput) return;
+  chatInput.value = restoreValue;
+  chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setEditBannerVisible(visible: boolean): void {
+  const banner = document.querySelector<HTMLElement>("#chat-edit-banner");
+  if (banner) banner.hidden = !visible;
+}
+
+function updateComposerSubmitLabel(editing: boolean): void {
+  const submit = document.querySelector<HTMLButtonElement>("#chat-form button[type=\"submit\"]");
+  if (submit) submit.textContent = editing ? "Save" : "Send";
 }
 
 // showDeleteConfirmInMenu replaces the menu's items with a single checkmark

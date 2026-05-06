@@ -296,6 +296,10 @@
                 <div class="vrule" aria-hidden="true"></div>
                 <main class="chat" role="tabpanel" aria-labelledby="tab-chat">
                     <ul id="chat-messages" class="chat-scroll"></ul>
+                    <div id="chat-edit-banner" class="chat-edit-banner" hidden>
+                        <span class="chat-edit-banner-label">Editing message</span>
+                        <button id="chat-edit-cancel" type="button" class="ghost chat-edit-banner-cancel">Cancel</button>
+                    </div>
                     <form id="chat-form" class="chat-compose" autocomplete="off">
                         <textarea
                             id="chat-input"
