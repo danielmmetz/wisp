@@ -146,7 +146,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
         },
         onLeaveRequest: () => leaveRoom(),
       });
-      selfBlock.setQuality("good");
+      selfBlock.setQuality("unknown");
       refreshPeerCount();
       startQualityPolling();
       // Reveal the share button only when the browser actually supports
@@ -324,6 +324,7 @@ function startQualityPolling(): void {
       row.setTransport(s.transport ?? "unknown");
       row.setQuality(qualityFromStats(s));
     }
+    selfBlock?.setQuality(selfQualityFromStats(stats));
     room.applyAdaptiveBitrate(stats);
   }, 2000);
 }
@@ -338,8 +339,31 @@ function stopQualityPolling(): void {
 // favor loss over RTT because perceived call quality drops fast with loss
 // (jitter buffer can paper over RTT, not over missing frames).
 function qualityFromStats(s: PeerStats): "good" | "degraded" | "poor" | "unknown" {
-  const loss = s.lossRate;
-  const rtt = s.rttMs;
+  return bucket(s.lossRate, s.rttMs);
+}
+
+// selfQualityFromStats reflects how well our outbound audio is reaching the
+// room. Each peer's RR tells us how much of our send stream they lost; we
+// take the worst report — if even one listener is hearing us badly, that's
+// our upload problem. RR data lags by a few seconds, so until any peer has
+// reported back we stay "unknown".
+function selfQualityFromStats(stats: Map<string, PeerStats>): "good" | "degraded" | "poor" | "unknown" {
+  let worstLoss: number | undefined;
+  let worstRtt: number | undefined;
+  for (const s of stats.values()) {
+    const l = s.outboundLossRate;
+    if (typeof l === "number" && Number.isFinite(l)) {
+      if (worstLoss === undefined || l > worstLoss) worstLoss = l;
+    }
+    const r = s.outboundRttMs;
+    if (typeof r === "number" && Number.isFinite(r)) {
+      if (worstRtt === undefined || r > worstRtt) worstRtt = r;
+    }
+  }
+  return bucket(worstLoss, worstRtt);
+}
+
+function bucket(loss: number | undefined, rtt: number | undefined): "good" | "degraded" | "poor" | "unknown" {
   if (typeof loss !== "number" || !Number.isFinite(loss)) return "unknown";
   if (loss >= 0.05 || (rtt !== undefined && rtt > 400)) return "poor";
   if (loss >= 0.02 || (rtt !== undefined && rtt > 200)) return "degraded";

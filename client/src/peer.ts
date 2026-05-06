@@ -41,6 +41,13 @@ export interface PeerStats {
   // lossRate is the inbound loss fraction on the last sampling window
   // (0..1). NaN when no samples are available yet.
   lossRate?: number;
+  // outboundLossRate is the loss fraction the remote peer reported for the
+  // audio we're sending them, computed over the last sampling window. Driven
+  // by RTCP receiver reports, so it lags inbound by a few seconds and may be
+  // absent until the first RR arrives.
+  outboundLossRate?: number;
+  // outboundRttMs is the RTT reported by the remote in their last RR, in ms.
+  outboundRttMs?: number;
   transport?: PeerTransport;
 }
 
@@ -113,6 +120,10 @@ export class Peer {
   // rate without leaking cumulative-since-start values into the UI.
   private lastLost = 0;
   private lastRecv = 0;
+  // Same windowing trick for the outbound side. packetsLost comes from the
+  // remote's RR (remote-inbound-rtp); packetsSent comes from our outbound-rtp.
+  private lastOutLost = 0;
+  private lastOutSent = 0;
   // Bitrate currently applied on the outbound sender. We only call
   // setParameters when the value actually changes — getParameters/setParameters
   // round-trips are cheap but not free.
@@ -554,6 +565,9 @@ export class Peer {
     let remoteCandidateId: string | undefined;
     let cumLost = 0;
     let cumRecv = 0;
+    let cumOutLost = 0;
+    let cumOutSent = 0;
+    let outRtt: number | undefined;
     stats.forEach((rep) => {
       if (rep.type === "candidate-pair" && rep.state === "succeeded" && rep.nominated) {
         if (typeof rep.currentRoundTripTime === "number") {
@@ -565,6 +579,13 @@ export class Peer {
       if (rep.type === "inbound-rtp" && rep.kind === "audio") {
         if (typeof rep.packetsLost === "number") cumLost = rep.packetsLost;
         if (typeof rep.packetsReceived === "number") cumRecv = rep.packetsReceived;
+      }
+      if (rep.type === "outbound-rtp" && rep.kind === "audio") {
+        if (typeof rep.packetsSent === "number") cumOutSent = rep.packetsSent;
+      }
+      if (rep.type === "remote-inbound-rtp" && rep.kind === "audio") {
+        if (typeof rep.packetsLost === "number") cumOutLost = rep.packetsLost;
+        if (typeof rep.roundTripTime === "number") outRtt = rep.roundTripTime * 1000;
       }
     });
     out.packetsLost = cumLost;
@@ -581,6 +602,18 @@ export class Peer {
     }
     this.lastLost = cumLost;
     this.lastRecv = cumRecv;
+    // Outbound window: same shape, but driven by remote RR. Until the first
+    // RR arrives, packetsLost stays at 0 and packetsSent grows, so dTotal>0
+    // gates the report — first sample after construction yields no rate.
+    const dOutLost = cumOutLost - this.lastOutLost;
+    const dOutSent = cumOutSent - this.lastOutSent;
+    const dOutTotal = dOutLost + dOutSent;
+    if (this.lastOutSent > 0 && dOutTotal > 0) {
+      out.outboundLossRate = dOutLost / dOutTotal;
+    }
+    this.lastOutLost = cumOutLost;
+    this.lastOutSent = cumOutSent;
+    if (typeof outRtt === "number") out.outboundRttMs = outRtt;
     // The selected pair tells us how the media is actually flowing. If either
     // side's candidate is "relay" the path goes through TURN; otherwise it's
     // a direct host/srflx/prflx pairing between the two browsers.

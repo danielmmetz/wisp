@@ -304,11 +304,13 @@ export function bindSelfBlock(opts: SelfBlockOptions): SelfBlockHandle {
       else if (q === "degraded") { qmetaEl.textContent = "degraded"; qmetaEl.classList.add("degraded"); }
       else if (q === "poor") { qmetaEl.textContent = "poor"; qmetaEl.classList.add("poor"); }
       else qmetaEl.textContent = "";
+      qmetaEl.title = "Outgoing audio quality as measured from others in the room.";
     },
     reset: () => {
       muteBtn.classList.remove("is-muted");
       muteBtnNarrow?.classList.remove("is-muted");
       qmetaEl.textContent = "";
+      qmetaEl.title = "";
       qmetaEl.classList.remove("degraded", "poor");
       railSelf?.classList.remove("speaking");
       peerRow?.classList.remove("speaking");
