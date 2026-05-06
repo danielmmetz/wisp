@@ -48,6 +48,15 @@ export class SignalingClient {
     ws.send(JSON.stringify(env));
   }
 
+  // state reports the websocket's lifecycle for diagnostics. Closed covers
+  // both "never opened" and "closed/closing".
+  state(): "open" | "connecting" | "closed" {
+    if (!this.ws) return "closed";
+    if (this.ws.readyState === WebSocket.OPEN) return "open";
+    if (this.ws.readyState === WebSocket.CONNECTING) return "connecting";
+    return "closed";
+  }
+
   close(): void {
     this.ws?.close(1000, "client closing");
     this.ws = null;

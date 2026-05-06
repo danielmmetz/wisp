@@ -27,7 +27,7 @@ import {
   type EphemeralKeypair,
 } from "./crypto.ts";
 import { GroupCipher, isE2EEAvailable } from "./e2ee.ts";
-import { Peer, turnCredsToIceServers, type PeerStats } from "./peer.ts";
+import { Peer, turnCredsToIceServers, type PeerDiagnostics, type PeerStats } from "./peer.ts";
 import { SignalingClient, signalingURL } from "./signaling.ts";
 import {
   startShareCapture,
@@ -56,6 +56,31 @@ function newChatId(): string {
 // truly-dead network.
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
+
+// Diagnostics is the snapshot the connection-diagnostics panel renders. It
+// gathers room-level state (signaling, TURN, reconnect attempts) plus the
+// per-peer view from Peer.diagnostics(). Designed so the entire JSON blob
+// can be copied to clipboard for sharing without losing context.
+export interface Diagnostics {
+  capturedAt: number;
+  status: "connecting" | "reconnecting" | "connected" | "left";
+  // intentStartedAt is the wall-clock ms when the user clicked Create/Join,
+  // used to compute "stuck for Xs" while connecting. Reset on each reconnect.
+  intentStartedAt: number | null;
+  reconnectAttempt: number;
+  code: string | null;
+  localId: string | null;
+  ws: "open" | "connecting" | "closed";
+  turn: {
+    received: boolean;
+    uris: string[];
+    // ttlSecondsRemaining is the original ttl minus the time since we received
+    // the creds; null when we never received any.
+    ttlSecondsRemaining: number | null;
+  };
+  peers: (PeerDiagnostics & { name: string })[];
+  local: { userAgent: string; onLine: boolean };
+}
 
 export interface ChatMessage {
   // id uniquely identifies this message within the room (sender-generated
@@ -138,6 +163,18 @@ export class Room {
   private localId: string | null = null;
   private code: string | null = null;
   private iceServers: RTCIceServer[] = [];
+  // turnCreds + turnReceivedAt let diagnostics() report whether the server
+  // issued TURN credentials and how much of their TTL remains. Cleared on
+  // teardown; refreshed each time room_created/room_joined arrives (which
+  // is how Cloudflare creds get rotated mid-session via reconnect).
+  private turnCreds: TurnCreds | null = null;
+  private turnReceivedAt: number | null = null;
+  // intentStartedAt is set when the user first dials (create/join) and on
+  // each reconnect attempt. Diagnostics uses it to show "Connecting · Xs".
+  private intentStartedAt: number | null = null;
+  // reconnectAttempt is the most recent attempt number (1-indexed) reported
+  // to onReconnecting; 0 when we're not currently reconnecting.
+  private reconnectAttempt = 0;
   private cipher: GroupCipher | null = null;
   private groupKeyRaw: Uint8Array | null = null;
   private stopSelfVAD: (() => void) | null = null;
@@ -168,6 +205,7 @@ export class Room {
   // room. The room creator generates the initial group key.
   async create(name: string): Promise<void> {
     this.intent = { kind: "create", code: "", name };
+    this.intentStartedAt = Date.now();
     await this.dialAndHandshake(async () => {
       this.signaling.send({
         type: "create_room",
@@ -179,6 +217,7 @@ export class Room {
   // join dials the signaling server with an existing room code.
   async join(code: string, name: string): Promise<void> {
     this.intent = { kind: "join", code, name };
+    this.intentStartedAt = Date.now();
     await this.dialAndHandshake(async () => {
       this.signaling.send({
         type: "join_room",
@@ -303,6 +342,8 @@ export class Room {
     }
     this.reconnecting = true;
     for (let attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS; attempt++) {
+      this.reconnectAttempt = attempt + 1;
+      this.intentStartedAt = Date.now();
       this.cb.onReconnecting(attempt + 1);
       await sleep(RECONNECT_DELAYS_MS[attempt]!);
       if (this.leaving) return;
@@ -376,6 +417,10 @@ export class Room {
     this.code = null;
     this.intent = null;
     this.reconnecting = false;
+    this.turnCreds = null;
+    this.turnReceivedAt = null;
+    this.intentStartedAt = null;
+    this.reconnectAttempt = 0;
     this.cb.onLeft(reason);
   }
 
@@ -388,6 +433,9 @@ export class Room {
         this.names.set(peerId, name);
         this.code = code;
         this.iceServers = turnCredsToIceServers(turn ?? null);
+        this.turnCreds = turn ?? null;
+        this.turnReceivedAt = turn ? Date.now() : null;
+        this.reconnectAttempt = 0;
         await this.becomeKeyOwner();
         this.installSelfVAD();
         // Sole-survivor reconnect: room got recreated under the same code,
@@ -410,6 +458,9 @@ export class Room {
         this.names.set(peerId, name);
         this.code = code;
         this.iceServers = turnCredsToIceServers(turn ?? null);
+        this.turnCreds = turn ?? null;
+        this.turnReceivedAt = turn ? Date.now() : null;
+        this.reconnectAttempt = 0;
         for (const info of peers) {
           const p = this.addPeer(info);
           if (p) void p.start().catch((err) => console.error("peer.start failed", err));
@@ -799,6 +850,73 @@ export class Room {
     );
     for (const [id, s] of entries) out.set(id, s);
     return out;
+  }
+
+  // diagnostics returns a snapshot of room + per-peer connection state for
+  // the user-facing diagnostics panel. Async because each peer's stats
+  // report is async.
+  async diagnostics(): Promise<Diagnostics> {
+    const peerEntries = await Promise.all(
+      Array.from(this.peers.values(), async (p) => p.diagnostics()),
+    );
+    const peers = peerEntries.map((d) => ({ ...d, name: this.names.get(d.id) ?? "" }));
+
+    let status: Diagnostics["status"];
+    if (!this.intent) {
+      status = "left";
+    } else if (this.reconnecting) {
+      status = "reconnecting";
+    } else if (
+      this.localId !== null &&
+      (this.peers.size === 0 ||
+        peers.some((p) => p.connectionState === "connected"))
+    ) {
+      // Connected once we've joined and either we're alone or at least one
+      // peer is fully up. The "alone in a room" case is uncommon but real
+      // (room creator, before anyone joins) — we don't want to lie about it.
+      status = "connected";
+    } else {
+      status = "connecting";
+    }
+
+    let ttlSecondsRemaining: number | null = null;
+    if (this.turnCreds && this.turnReceivedAt) {
+      const elapsed = (Date.now() - this.turnReceivedAt) / 1000;
+      ttlSecondsRemaining = Math.max(0, this.turnCreds.ttl - elapsed);
+    }
+
+    return {
+      capturedAt: Date.now(),
+      status,
+      intentStartedAt: this.intentStartedAt,
+      reconnectAttempt: this.reconnectAttempt,
+      code: this.code,
+      localId: this.localId,
+      ws: this.signaling.state(),
+      turn: {
+        received: this.turnCreds !== null,
+        uris: this.turnCreds?.uris ?? [],
+        ttlSecondsRemaining,
+      },
+      peers,
+      local: {
+        userAgent: navigator.userAgent,
+        onLine: navigator.onLine,
+      },
+    };
+  }
+
+  // kickReconnect forcibly closes the websocket so the existing reconnect
+  // machinery (onSignalingClosed → attemptReconnect) takes over. Used by
+  // the diagnostics panel's Reconnect button when peers are stuck.
+  // No-op when the room isn't active or the user already left.
+  kickReconnect(): void {
+    if (this.intent === null || this.leaving) return;
+    try {
+      this.signaling.close();
+    } catch {
+      // already closed; the close handler will still run
+    }
   }
 }
 

@@ -34,6 +34,32 @@ const RED_PT = 63;
 
 export type PeerTransport = "direct" | "relayed";
 
+// PeerDiagnostics is a snapshot for the connection-diagnostics panel: the
+// raw RTCPeerConnection states and the candidate-type pool, alongside the
+// transport classification we already compute for stats. Distinct from
+// PeerStats — this one is for "why is this not working", not for adaptive
+// bitrate or quality bars.
+export interface PeerDiagnostics {
+  id: string;
+  isOfferer: boolean;
+  connectionState: RTCPeerConnectionState;
+  iceConnectionState: RTCIceConnectionState;
+  iceGatheringState: RTCIceGatheringState;
+  signalingState: RTCSignalingState;
+  transport: PeerTransport | "unknown";
+  // selectedPair carries the candidate types of the nominated pair when one
+  // exists. Null means no nominated pair yet — typical mid-connection.
+  selectedPair: { localType: string | null; remoteType: string | null } | null;
+  // Distinct candidateType values seen across all local/remote candidates,
+  // not just the selected pair. Tells us whether STUN reflexive worked
+  // (srflx present) and whether the relay is in the pool at all (relay
+  // present). Empty array means no candidates of that side yet.
+  localCandidateTypes: string[];
+  remoteCandidateTypes: string[];
+  rttMs?: number;
+  ageMs: number;
+}
+
 export interface PeerStats {
   rttMs?: number;
   packetsLost?: number;
@@ -136,6 +162,9 @@ export class Peer {
   // the matching ICE candidates that follow get tolerated rather than
   // surfaced as errors.
   private ignoreOffer = false;
+  // Wall-clock timestamp at construction, used by diagnostics() to report
+  // how long this peer has existed (e.g. "stuck for 14s").
+  private readonly createdAt = Date.now();
 
   constructor(opts: {
     localId: string;
@@ -628,6 +657,56 @@ export class Peer {
 
   connectionState(): RTCPeerConnectionState {
     return this.pc.connectionState;
+  }
+
+  // diagnostics walks the full stats report (not just the nominated pair)
+  // so the diagnostics panel can show "we have srflx but no relay" — a
+  // distinction that matters when peers are stuck in `checking`.
+  async diagnostics(): Promise<PeerDiagnostics> {
+    const localTypes = new Set<string>();
+    const remoteTypes = new Set<string>();
+    let selectedLocalType: string | null = null;
+    let selectedRemoteType: string | null = null;
+    let rttMs: number | undefined;
+    let transport: PeerTransport | "unknown" = "unknown";
+    try {
+      const stats = await this.pc.getStats();
+      stats.forEach((rep) => {
+        if (rep.type === "local-candidate") {
+          if (typeof rep.candidateType === "string") localTypes.add(rep.candidateType);
+        } else if (rep.type === "remote-candidate") {
+          if (typeof rep.candidateType === "string") remoteTypes.add(rep.candidateType);
+        } else if (rep.type === "candidate-pair" && rep.state === "succeeded" && rep.nominated) {
+          if (typeof rep.currentRoundTripTime === "number") {
+            rttMs = rep.currentRoundTripTime * 1000;
+          }
+          const local = rep.localCandidateId ? stats.get(rep.localCandidateId) : undefined;
+          const remote = rep.remoteCandidateId ? stats.get(rep.remoteCandidateId) : undefined;
+          selectedLocalType = (local?.candidateType as string | undefined) ?? null;
+          selectedRemoteType = (remote?.candidateType as string | undefined) ?? null;
+          const relayed = local?.candidateType === "relay" || remote?.candidateType === "relay";
+          transport = relayed ? "relayed" : "direct";
+        }
+      });
+    } catch (err) {
+      console.warn("diagnostics getStats failed", err);
+    }
+    return {
+      id: this.remoteId,
+      isOfferer: this.local.isOfferer,
+      connectionState: this.pc.connectionState,
+      iceConnectionState: this.pc.iceConnectionState,
+      iceGatheringState: this.pc.iceGatheringState,
+      signalingState: this.pc.signalingState,
+      transport,
+      selectedPair: selectedLocalType || selectedRemoteType
+        ? { localType: selectedLocalType, remoteType: selectedRemoteType }
+        : null,
+      localCandidateTypes: [...localTypes].sort(),
+      remoteCandidateTypes: [...remoteTypes].sort(),
+      rttMs,
+      ageMs: Date.now() - this.createdAt,
+    };
   }
 
   close(): void {

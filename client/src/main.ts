@@ -10,6 +10,7 @@ import {
   startMic,
   type AudioDevice,
 } from "./audio.ts";
+import { bindDiagnostics, type DiagnosticsController } from "./diagnostics.ts";
 import { Room } from "./room.ts";
 import { isDisplayMediaSupported } from "./screen.ts";
 import {
@@ -55,6 +56,7 @@ let qualityTimer: number | null = null;
 let localId: string | null = null;
 let presenterView: PresenterView | null = null;
 let screenShareBtn: ScreenShareButton | null = null;
+let diagnostics: DiagnosticsController | null = null;
 // Remote screen-audio playback. Routed through attachRemoteStream so it
 // goes through the shared AudioContext (which honors the user's selected
 // output device via setSinkId). Self-presenters skip this to avoid echo.
@@ -138,6 +140,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       localId = id;
       showRoom(code);
       setRoomStatus("Connecting…");
+      diagnostics?.setStuckHint(true);
       selfBlock = bindSelfBlock({
         name,
         onMuteToggle: (m) => mic?.setMuted(m),
@@ -208,6 +211,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       switch (state) {
         case "connected":
           setRoomStatus("");
+          diagnostics?.setStuckHint(false);
           break;
         case "disconnected":
         case "failed":
@@ -265,6 +269,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
     },
     onReconnecting: (attempt) => {
       setRoomStatus(`Reconnecting (attempt ${attempt})…`);
+      diagnostics?.setStuckHint(true);
       // Visually mark all peer rows as poor while the room is in limbo.
       for (const r of rows.values()) r.setQuality("poor");
     },
@@ -273,6 +278,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       // isSelf checks (e.g. presenter recognition) keep working.
       localId = id;
       setRoomStatus("");
+      // Stuck hint stays true until at least one peer reaches connected;
+      // onConnectionState clears it.
     },
     onLeft: (reason) => {
       stopQualityPolling();
@@ -285,6 +292,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       localId = null;
       setPeerCount(0);
       setRoomStatus("");
+      diagnostics?.reset();
       presenterView?.setActive(null);
       presenterView?.setOpen(false);
       remoteScreenAudio?.close();
@@ -300,6 +308,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       setLobbyError(msg);
       stopQualityPolling();
       releaseMic();
+      diagnostics?.reset();
       room = null;
     },
   };
@@ -645,6 +654,10 @@ function init(): void {
   initAudioPopover();
   initRoomTabs();
   initScreenShare();
+  diagnostics = bindDiagnostics({
+    getSnapshot: () => room?.diagnostics() ?? null,
+    kickReconnect: () => room?.kickReconnect(),
+  });
 
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.

@@ -30,6 +30,16 @@
                 <p class="tagline">privacy conscious chat</p>
                 <code id="room-code-narrow" class="code-narrow"></code>
                 <span id="room-status-narrow" class="status-narrow"></span>
+                <button
+                    id="diag-trigger-narrow"
+                    class="diag-trigger header-action"
+                    type="button"
+                    aria-label="Connection diagnostics"
+                    title="Connection diagnostics"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                    aria-controls="diag-dialog"
+                >?</button>
             </div>
             <div class="site-header-actions">
                 <button
@@ -188,7 +198,19 @@
                     <header class="rail-head">
                         <div class="rail-head-id">
                             <code id="room-code" class="code"></code>
-                            <span id="room-status" class="meta"></span>
+                            <div class="rail-head-meta">
+                                <span id="room-status" class="meta"></span>
+                                <button
+                                    id="diag-trigger"
+                                    class="diag-trigger"
+                                    type="button"
+                                    aria-label="Connection diagnostics"
+                                    title="Connection diagnostics"
+                                    aria-haspopup="dialog"
+                                    aria-expanded="false"
+                                    aria-controls="diag-dialog"
+                                >?</button>
+                            </div>
                         </div>
                         <button
                             id="copy-link"
@@ -392,6 +414,46 @@
                 </section>
             </section>
         </main>
+
+        <div id="diag-dialog"
+            class="diag-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="diag-title"
+            hidden
+        >
+            <div class="diag-card">
+                <header class="diag-head">
+                    <div class="diag-title-block">
+                        <div id="diag-title" class="diag-title">Connection diagnostics</div>
+                        <div id="diag-sub" class="diag-sub"></div>
+                    </div>
+                    <button
+                        id="diag-close"
+                        class="icon-btn diag-close"
+                        type="button"
+                        aria-label="Close diagnostics"
+                        title="Close"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </header>
+                <div id="diag-body" class="diag-body"></div>
+                <footer class="diag-foot">
+                    <button id="diag-copy" class="diag-btn" type="button">
+                        <svg class="copy-tick" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        <span class="copy-label">Copy diagnostics</span>
+                    </button>
+                    <span class="diag-foot-spacer"></span>
+                    <button id="diag-reconnect" class="diag-btn diag-btn-primary" type="button" hidden>Reconnect</button>
+                </footer>
+            </div>
+        </div>
 
         <template id="peer-row">
             <li class="peer">

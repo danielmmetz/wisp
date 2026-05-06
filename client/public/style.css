@@ -1336,3 +1336,297 @@ body.presenter-open .presenter-indicator-name {
     margin: 0.4rem 0.5rem;
   }
 }
+
+/* ============================== Diagnostics ============================== */
+
+/* The trigger lives next to #room-status (in the rail-head) and
+ * #room-status-narrow (in the site-header on narrow). It's a tiny "?" pip
+ * that pulses warn-coloured when the room has been stuck >10s, but is
+ * otherwise quiet — the panel is an opt-in, not a notification. */
+.rail-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.rail-head-meta .meta { display: inline-block; flex: 1; min-width: 0; }
+.diag-trigger {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--card);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.diag-trigger:hover { color: var(--accent); border-color: var(--accent); }
+.diag-trigger.attention {
+  color: var(--warn);
+  border-color: var(--warn);
+  animation: diag-pulse 1.6s ease-in-out infinite;
+}
+@keyframes diag-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(181, 106, 7, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(181, 106, 7, 0.16); }
+}
+@media (prefers-color-scheme: dark) {
+  @keyframes diag-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+    50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.18); }
+  }
+}
+/* The wide trigger lives in the rail-head (hidden when not in-room and on
+ * narrow). The narrow trigger sits in the site-header-left so it can ride
+ * next to #room-status-narrow, but that section isn't gated by the
+ * existing .header-action rule (which is scoped to .site-header-actions),
+ * so we gate it explicitly here. */
+#diag-trigger-narrow { display: none; }
+@media (max-width: 599px) {
+  body.in-room #diag-trigger-narrow { display: inline-flex; vertical-align: middle; }
+}
+
+/* ---- diagnostics dialog ---- */
+
+.diag-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(20, 25, 40, 0.32);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.diag-card {
+  width: 100%;
+  max-width: 28rem;
+  max-height: calc(100% - 2rem);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow:
+    0 16px 40px rgba(20, 30, 60, 0.18),
+    0 2px 4px rgba(20, 30, 60, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (prefers-color-scheme: dark) {
+  .diag-card {
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.5),
+      0 2px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.diag-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.95rem 0.65rem;
+  border-bottom: 1px solid var(--rule);
+}
+.diag-title-block { min-width: 0; }
+.diag-title { font-weight: 600; font-size: 0.95rem; }
+.diag-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 0.15rem;
+}
+.diag-close { padding: 4px; }
+
+.diag-body {
+  padding: 0.55rem 0.95rem 0.85rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.diag-section h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* Three-column key/value rows used by the Server and Local sections. The
+ * first column is a small status pip; the V column right-aligns. */
+.diag-row {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr auto;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.18rem 0;
+  font-size: 0.88rem;
+}
+.diag-row .k { color: var(--muted); }
+.diag-row .v { color: var(--fg); text-align: right; }
+.diag-row .v .dim,
+.diag-row .v.dim { color: var(--muted); font-variant-numeric: tabular-nums; }
+.diag-pip {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--muted-2);
+  justify-self: center;
+  align-self: center;
+  margin-top: 0.45rem;
+}
+.diag-pip.good { background: var(--good); }
+.diag-pip.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(181, 106, 7, 0.18);
+}
+.diag-pip.bad {
+  background: var(--bad);
+  box-shadow: 0 0 0 3px rgba(197, 48, 48, 0.18);
+}
+
+/* ---- per-peer card ---- */
+.diag-peer {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  background: var(--card-2);
+}
+.diag-peer + .diag-peer { margin-top: 0.5rem; }
+.diag-peer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.diag-peer-name { font-weight: 600; font-size: 0.92rem; }
+.diag-state-tag {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.diag-state-tag.good {
+  color: var(--good);
+  border-color: var(--good);
+  background: rgba(15, 157, 88, 0.10);
+}
+.diag-state-tag.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: rgba(181, 106, 7, 0.10);
+}
+.diag-state-tag.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+  background: rgba(197, 48, 48, 0.10);
+}
+.diag-peer dl {
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.7rem;
+  row-gap: 0.15rem;
+  font-size: 0.85rem;
+}
+.diag-peer dt { color: var(--muted); }
+.diag-peer dd { margin: 0; color: var(--fg); }
+.diag-peer dd .sub { color: var(--muted); }
+.diag-peer dd code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--rule-2);
+  border-radius: 3px;
+  padding: 0 0.25em;
+}
+
+/* ---- per-failure-mode tip ---- */
+.diag-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--card-2);
+  font-size: 0.85rem;
+  color: var(--fg);
+  line-height: 1.45;
+}
+.diag-tip .ic {
+  flex: 0 0 auto;
+  font-weight: 700;
+  line-height: 1;
+}
+.diag-tip strong { font-weight: 700; }
+.diag-tip.warn {
+  border-color: var(--warn);
+  background: rgba(181, 106, 7, 0.10);
+}
+.diag-tip.warn .ic { color: var(--warn); }
+.diag-tip.bad {
+  border-color: var(--bad);
+  background: rgba(197, 48, 48, 0.10);
+}
+.diag-tip.bad .ic { color: var(--bad); }
+.diag-tip.good {
+  border-color: var(--good);
+  background: rgba(15, 157, 88, 0.10);
+}
+.diag-tip.good .ic { color: var(--good); }
+
+/* ---- footer with action buttons ---- */
+.diag-foot {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.65rem 0.95rem;
+  border-top: 1px solid var(--rule);
+  background: var(--card);
+}
+.diag-foot-spacer { flex: 1; }
+.diag-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid var(--rule);
+  background: var(--card);
+  color: var(--fg);
+}
+.diag-btn:hover { border-color: var(--muted); }
+.diag-btn-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.diag-btn-primary:hover { filter: brightness(1.05); }
+.diag-btn .copy-tick { display: none; color: var(--good); }
+.diag-btn.copied .copy-tick { display: inline; }
+.diag-btn.copied { color: var(--good); border-color: var(--good); }
+
+/* On narrow, the panel becomes near-full-width with reduced rounding so
+ * it can still scroll comfortably inside the viewport. */
+@media (max-width: 599px) {
+  .diag-dialog { padding: 0.5rem; }
+  .diag-card { max-width: 100%; border-radius: 12px; }
+}
