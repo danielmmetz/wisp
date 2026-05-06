@@ -1014,6 +1014,13 @@ export function createPresenterView(opts: {
     throw new Error("presenter UI elements missing");
   }
 
+  // iPhone Safari supports element-level fullscreen only on <video> elements;
+  // calling requestFullscreen on the wrapping div silently does nothing.
+  // Hide the button rather than ship a dead control.
+  if (!document.fullscreenEnabled) {
+    fsBtn.hidden = true;
+  }
+
   let active: PresenterInfo | null = null;
   let open = false;
   // volume is the current gain factor in [0, 2]. lastNonZero remembers

@@ -41,6 +41,15 @@
 
 * { box-sizing: border-box; }
 
+/* Suppress iOS's translucent grey tap-flash on every interactive element so
+ * taps look the same as desktop clicks. touch-action: manipulation tells
+ * mobile browsers we don't need the 300ms double-tap-zoom delay on
+ * interactive controls. */
+button, a, input, select, textarea, [role="button"], [tabindex] {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 /* Make sure flex/grid layout never overrides the hidden attribute. Without
  * this, #room { display: grid } would beat the UA's [hidden] rule and the
  * room would render on the lobby screen. */
@@ -65,7 +74,7 @@ body {
 
 .site-header {
   margin: 0;
-  padding: 0.5rem 1rem;
+  padding: max(0.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) 0.5rem max(1rem, env(safe-area-inset-left));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -810,6 +819,7 @@ input.name-edit {
   gap: 1px;
 }
 .msg-menu-item {
+  -webkit-appearance: none;
   appearance: none;
   background: transparent;
   border: 0;
@@ -846,6 +856,7 @@ input.name-edit {
   box-shadow: none;
 }
 .msg-menu-icon-btn {
+  -webkit-appearance: none;
   appearance: none;
   background: transparent;
   border: 1px solid var(--rule, rgba(0, 0, 0, 0.18));
@@ -915,7 +926,7 @@ input.name-edit {
   display: flex;
   align-items: flex-end;
   gap: 0.5rem;
-  padding: 0.55rem;
+  padding: 0.55rem 0.55rem max(0.55rem, env(safe-area-inset-bottom));
   min-height: var(--footer-row-h);
   border-top: 1px solid var(--rule);
   background: var(--card);
@@ -1178,6 +1189,7 @@ body.presenter-open .chat { display: none; }
   padding: 0.25rem;
   background: rgba(0, 0, 0, 0.45);
   border-radius: 999px;
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   z-index: 1;
 }
@@ -1253,7 +1265,7 @@ body.presenter-open .chat { display: none; }
 
 #presenter-pane:fullscreen {
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
 }
 
 /* ---- presenter indicator (rail entry point) ---- */
