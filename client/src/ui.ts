@@ -452,6 +452,13 @@ export function editChatMessage(id: string, body: string, _editedTs: number): vo
     bodyEl.innerHTML = renderMarkdown(body);
     bodyEl.hidden = false;
   }
+  // Restore the kebab affordance — startInlineEdit hid it while the editor
+  // was open, and the success path skipped restore() in favor of waiting
+  // for this callback to clean up.
+  if (node.classList.contains("own")) {
+    const btn = node.querySelector<HTMLButtonElement>(".msg-menu-btn");
+    if (btn) btn.hidden = false;
+  }
   ensureEditedTag(node);
 }
 
@@ -614,27 +621,9 @@ function openMessageMenu(row: HTMLElement): void {
   const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
   btn?.setAttribute("aria-expanded", "true");
 
-  // Position the menu next to the row's kebab. Fall back to row's
-  // top-right if the kebab isn't visible (long-press on touch).
-  const anchor = btn ?? row;
-  const rect = anchor.getBoundingClientRect();
-  // Defer position until after layout so we know the menu's actual size.
-  const menuRect = menu.getBoundingClientRect();
-  const margin = 8;
-  let left = rect.right - menuRect.width;
-  let top = rect.bottom + 4;
-  // Keep it on-screen.
-  if (left < margin) left = margin;
-  if (left + menuRect.width > window.innerWidth - margin) {
-    left = window.innerWidth - menuRect.width - margin;
-  }
-  if (top + menuRect.height > window.innerHeight - margin) {
-    // Flip above the row if there's no room below.
-    top = rect.top - menuRect.height - 4;
-    if (top < margin) top = margin;
-  }
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  // For the regular menu, align the right edge with the kebab so it
+  // doesn't bleed off the right side of the chat column.
+  positionMenuRelativeTo(menu, btn ?? row, "right");
 
   menu.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement | null;
@@ -671,6 +660,38 @@ function openMessageMenu(row: HTMLElement): void {
       items[(idx - 1 + items.length) % items.length]?.focus();
     }
   });
+}
+
+// positionMenuRelativeTo places `menu` (already attached to <body> with
+// position: fixed) below `anchor`, with the popover's horizontal alignment
+// chosen by `align`: "right" lines up the popover's right edge with the
+// anchor's right edge (good for a multi-item menu under a top-right
+// kebab); "center" centers the popover on the anchor (good for a small
+// confirm popover sitting directly under the kebab).
+function positionMenuRelativeTo(
+  menu: HTMLElement,
+  anchor: Element,
+  align: "right" | "center",
+): void {
+  const aRect = anchor.getBoundingClientRect();
+  const mRect = menu.getBoundingClientRect();
+  const margin = 8;
+  let left =
+    align === "center"
+      ? aRect.left + aRect.width / 2 - mRect.width / 2
+      : aRect.right - mRect.width;
+  let top = aRect.bottom + 4;
+  if (left < margin) left = margin;
+  if (left + mRect.width > window.innerWidth - margin) {
+    left = window.innerWidth - mRect.width - margin;
+  }
+  if (top + mRect.height > window.innerHeight - margin) {
+    // Flip above the anchor if there's no room below.
+    top = aRect.top - mRect.height - 4;
+    if (top < margin) top = margin;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
 }
 
 function closeMessageMenu(): void {
@@ -766,62 +787,38 @@ function startInlineEdit(row: HTMLElement, id: string): void {
   input.select();
 }
 
-// showDeleteConfirmInMenu replaces the menu's items with a compact Confirm
-// prompt in place. The popover stays where it is, so the user's cursor
-// doesn't have to traverse the row to confirm.
+// showDeleteConfirmInMenu replaces the menu's items with a single checkmark
+// confirm button positioned directly below the kebab. To bail, the user
+// clicks outside or hits Esc — both wired up at the document level. Enter
+// also confirms.
 function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string): void {
   if (row.classList.contains("deleted")) return;
   menu.classList.add("msg-menu-confirm");
   menu.replaceChildren();
 
-  const label = document.createElement("span");
-  label.className = "msg-menu-confirm-label";
-  label.textContent = "Confirm";
-
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "msg-menu-icon-btn";
-  cancel.setAttribute("aria-label", "Cancel");
-  cancel.title = "Cancel";
-  cancel.innerHTML = `
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
-      <line x1="6" y1="6" x2="18" y2="18" />
-      <line x1="18" y1="6" x2="6" y2="18" />
-    </svg>`;
-
   const yes = document.createElement("button");
   yes.type = "button";
   yes.className = "msg-menu-icon-btn msg-menu-icon-btn-danger";
-  yes.setAttribute("aria-label", "Delete message");
-  yes.title = "Delete";
+  yes.setAttribute("aria-label", "Confirm delete");
+  yes.title = "Confirm delete";
   yes.innerHTML = `
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <polyline points="5 12 10 17 19 7" />
     </svg>`;
+  menu.append(yes);
 
-  menu.append(label, cancel, yes);
-
-  cancel.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    closeMessageMenu();
-  });
   const submit = () => {
     const ok = chatActionHandlers?.onDelete(id) ?? false;
-    if (!ok) {
-      // No room or lost authorship — just close the menu; the row stays
-      // as-is. Edge case in practice.
-      closeMessageMenu();
-    }
-    // Success path: room fires onChatDeleted → deleteChatMessage replaces
-    // the body with a tombstone and closes the menu.
+    if (!ok) closeMessageMenu();
+    // Success: room fires onChatDeleted → deleteChatMessage replaces the
+    // body with a tombstone and closes the menu.
   };
   yes.addEventListener("click", (ev) => {
     ev.stopPropagation();
     submit();
   });
-  // Enter from anywhere in the popover confirms. The user just opened the
-  // menu and reads the prompt — having to tab to the checkmark first would
-  // be friction. Esc still closes via the document-level handler.
+  // Enter confirms even if focus drifted off the button. Esc still closes
+  // via the document-level handler in bindChatMessageActions.
   menu.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.isComposing) {
       ev.preventDefault();
@@ -829,6 +826,11 @@ function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string
       submit();
     }
   });
+
+  // Reposition: the popover is now much smaller than the original menu,
+  // so center it on the kebab to put the checkmark directly below it.
+  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
+  if (btn) positionMenuRelativeTo(menu, btn, "center");
   yes.focus();
 }
 

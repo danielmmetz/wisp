@@ -871,20 +871,14 @@ input.name-edit {
   color: #fff;
 }
 
-/* Compact Confirm prompt: a small label and two icon buttons in a single
- * horizontal row, replacing the menu items in place when the user picks
- * Delete. Keeps the popover small and the targets near the kebab. */
+/* Confirm-delete popover: a single checkmark sized to drop directly below
+ * the kebab. Cancellation is the usual outside-click / Esc — no explicit
+ * cancel button keeps it minimal. */
 .msg-menu.msg-menu-confirm {
   flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  padding: 4px;
+  gap: 0;
   min-width: 0;
-}
-.msg-menu-confirm-label {
-  font-size: 0.9rem;
-  color: var(--fg);
-  margin-right: 2px;
 }
 .msg-menu-icon-btn {
   appearance: none;
