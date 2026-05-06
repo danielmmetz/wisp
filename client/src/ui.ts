@@ -265,6 +265,8 @@ export function bindSelfBlock(opts: SelfBlockOptions): SelfBlockHandle {
   const muteBtn = $("#self-mute") as HTMLButtonElement;
   const muteBtnNarrow = document.querySelector<HTMLButtonElement>("#self-mute-narrow");
   const peerRowName = document.querySelector<HTMLElement>("#self-peer-name");
+  const railSelf = document.querySelector<HTMLElement>(".rail-self");
+  const peerRow = document.querySelector<HTMLElement>("#self-peer-row");
 
   let currentName = opts.name;
   nameEl.textContent = currentName;
@@ -281,7 +283,10 @@ export function bindSelfBlock(opts: SelfBlockOptions): SelfBlockHandle {
       if (!nameEl.querySelector("input")) nameEl.textContent = n;
       if (peerRowName && !peerRowName.querySelector("input")) peerRowName.textContent = n;
     },
-    setSpeaking: () => { /* self speaking indicator is intentionally absent */ },
+    setSpeaking: (s) => {
+      railSelf?.classList.toggle("speaking", s);
+      peerRow?.classList.toggle("speaking", s);
+    },
     setMuted: (m) => {
       muteBtn.classList.toggle("is-muted", m);
       muteBtnNarrow?.classList.toggle("is-muted", m);
@@ -304,6 +309,8 @@ export function bindSelfBlock(opts: SelfBlockOptions): SelfBlockHandle {
       muteBtnNarrow?.classList.remove("is-muted");
       qmetaEl.textContent = "";
       qmetaEl.classList.remove("degraded", "poor");
+      railSelf?.classList.remove("speaking");
+      peerRow?.classList.remove("speaking");
       nameEl.textContent = "";
       if (peerRowName) peerRowName.textContent = "";
     },

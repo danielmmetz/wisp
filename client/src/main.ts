@@ -192,9 +192,10 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.attach(stream);
     },
     onSpeakingChange: (id, speaking) => {
-      // Self's speaking transitions are intentionally not surfaced — the
-      // user knows when they're talking. Only mark remote rows.
-      if (id === localId) return;
+      if (id === localId) {
+        selfBlock?.setSpeaking(speaking);
+        return;
+      }
       rows.get(id)?.setSpeaking(speaking);
     },
     onConnectionState: (id, state) => {

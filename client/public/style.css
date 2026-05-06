@@ -487,12 +487,27 @@ button.ghost:hover { color: var(--fg); }
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.55rem;
+  padding: 0.55rem 0.55rem 0.55rem 0.65rem;
   min-height: var(--footer-row-h);
   border-top: 1px solid var(--rule);
+  border-left: 3px solid transparent;
   background: var(--card-2);
   flex: 0 0 auto;
 }
+.rail-self .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rule);
+  flex: 0 0 auto;
+  transition: background 60ms linear, box-shadow 60ms linear;
+}
+.rail-self.speaking { border-left-color: var(--accent); }
+.rail-self.speaking .dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.rail-self.speaking .id strong { color: var(--accent); }
 .rail-self .id {
   flex: 1;
   min-width: 0;
