@@ -481,10 +481,11 @@ function ensureEditedTag(node: HTMLElement): void {
   const tag = document.createElement("span");
   tag.className = "msg-edited-tag";
   tag.textContent = "(edited)";
-  // Place it right before the time span so it reads "(edited) 14:32".
-  const time = node.querySelector<HTMLElement>(".time");
-  if (time) node.insertBefore(tag, time);
-  else node.appendChild(tag);
+  // Append inside .head-line so the tag flows with the body text and
+  // wraps with it on narrow widths. Keeping it out of the .msg grid (which
+  // is body / time, two columns) avoids forcing the time onto its own row.
+  const head = node.querySelector<HTMLElement>(".head-line");
+  if (head) head.appendChild(tag);
 }
 
 // Single live popover and its anchor. We only ever show one menu at a time,
@@ -646,9 +647,14 @@ function openMessageMenu(row: HTMLElement): void {
       closeMessageMenu();
       return;
     }
-    closeMessageMenu();
-    if (action === "edit") startInlineEdit(row, id);
-    else if (action === "delete") confirmInlineDelete(row, id);
+    if (action === "edit") {
+      closeMessageMenu();
+      startInlineEdit(row, id);
+    } else if (action === "delete") {
+      // Morph the popover into a confirm step so the user doesn't have to
+      // move the cursor across the row to act on the prompt.
+      showDeleteConfirmInMenu(menu, row, id);
+    }
   });
 
   // Focus the first item so keyboard users can act on it immediately.
@@ -760,52 +766,48 @@ function startInlineEdit(row: HTMLElement, id: string): void {
   input.select();
 }
 
-function confirmInlineDelete(row: HTMLElement, id: string): void {
+// showDeleteConfirmInMenu replaces the menu's items with a Delete? prompt
+// in place. The popover stays where it is, so the user's cursor doesn't
+// have to traverse the row to confirm.
+function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string): void {
   if (row.classList.contains("deleted")) return;
-  if (row.querySelector(".msg-editor")) return;
-  const bodyEl = row.querySelector<HTMLElement>(".body");
-  if (!bodyEl) return;
-  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
-  if (btn) btn.hidden = true;
+  menu.classList.add("msg-menu-confirm");
+  menu.replaceChildren();
 
-  const confirm = document.createElement("span");
-  confirm.className = "msg-editor msg-confirm";
-  const label = document.createElement("span");
-  label.className = "msg-confirm-label";
+  const label = document.createElement("div");
+  label.className = "msg-menu-confirm-label";
   label.textContent = "Delete message?";
+
+  const buttons = document.createElement("div");
+  buttons.className = "msg-menu-confirm-row";
+
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "msg-menu-item";
+  cancel.textContent = "Cancel";
+
   const yes = document.createElement("button");
   yes.type = "button";
-  yes.className = "msg-editor-save msg-confirm-danger";
+  yes.className = "msg-menu-item msg-menu-item-danger";
   yes.textContent = "Delete";
-  const no = document.createElement("button");
-  no.type = "button";
-  no.className = "msg-editor-cancel";
-  no.textContent = "Cancel";
-  confirm.append(label, yes, no);
-  bodyEl.parentElement?.insertBefore(confirm, bodyEl.nextSibling);
-  bodyEl.hidden = true;
 
-  let done = false;
-  const restore = () => {
-    if (done) return;
-    done = true;
-    confirm.remove();
-    bodyEl.hidden = false;
-    if (btn) btn.hidden = false;
-  };
-  yes.addEventListener("click", () => {
-    if (done) return;
-    const ok = chatActionHandlers?.onDelete(id) ?? false;
-    if (!ok) restore();
-    // Success path: room fires onChatDeleted → deleteChatMessage replaces
-    // body with a tombstone and removes the confirm widget.
+  buttons.append(cancel, yes);
+  menu.append(label, buttons);
+
+  cancel.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    closeMessageMenu();
   });
-  no.addEventListener("click", restore);
-  confirm.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
-      ev.preventDefault();
-      restore();
+  yes.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const ok = chatActionHandlers?.onDelete(id) ?? false;
+    if (!ok) {
+      // No room or lost authorship — just close the menu; the row stays
+      // as-is. Edge case in practice.
+      closeMessageMenu();
     }
+    // Success path: room fires onChatDeleted → deleteChatMessage replaces
+    // the body with a tombstone and closes the menu.
   });
   yes.focus();
 }

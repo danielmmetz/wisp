@@ -870,14 +870,35 @@ input.name-edit {
   border-color: var(--accent, #2a6df4);
   color: #fff;
 }
-.msg-confirm-label {
-  color: var(--muted);
+
+/* Delete-confirm step shown in place of the menu items so the user can
+ * confirm without moving the cursor across the row. */
+.msg-menu.msg-menu-confirm { padding: 8px; gap: 6px; }
+.msg-menu-confirm-label {
   font-size: 0.9rem;
+  color: var(--fg);
+  padding: 2px 4px 4px;
 }
-.msg-confirm-danger {
-  background: #c0392b;
-  border-color: #c0392b;
+.msg-menu-confirm-row {
+  display: flex;
+  gap: 6px;
+}
+.msg-menu-confirm-row .msg-menu-item {
+  flex: 1;
+  text-align: center;
+  border: 1px solid var(--rule, rgba(0, 0, 0, 0.15));
+  min-height: 32px;
+  padding: 6px 8px;
+}
+.msg-menu-confirm-row .msg-menu-item-danger {
+  background: var(--bad, #c53030);
+  border-color: var(--bad, #c53030);
   color: #fff;
+}
+.msg-menu-confirm-row .msg-menu-item-danger:hover,
+.msg-menu-confirm-row .msg-menu-item-danger:focus-visible {
+  background: var(--bad, #c53030);
+  filter: brightness(1.05);
 }
 .msg.system {
   grid-column: 1 / -1;
