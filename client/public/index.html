@@ -423,7 +423,28 @@
                     <span class="body"></span>
                 </span>
                 <span class="time"></span>
+                <button
+                    class="msg-menu-btn"
+                    type="button"
+                    aria-label="Message actions"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                    hidden
+                >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <circle cx="5" cy="12" r="2" />
+                        <circle cx="12" cy="12" r="2" />
+                        <circle cx="19" cy="12" r="2" />
+                    </svg>
+                </button>
             </li>
+        </template>
+
+        <template id="chat-msg-menu">
+            <div class="msg-menu" role="menu">
+                <button class="msg-menu-item" role="menuitem" type="button" data-action="edit">Edit message</button>
+                <button class="msg-menu-item msg-menu-item-danger" role="menuitem" type="button" data-action="delete">Delete message</button>
+            </div>
         </template>
 
         <template id="chat-system">

@@ -395,9 +395,12 @@ function formatTime(ts: number): string {
 // `from` is the author's peer ID (localId for self). It is stamped on the
 // node as a data attribute so renameChatAuthor can rewrite history when
 // a peer renames, and so consecutive messages from the same author can be
-// detected and rendered without repeating the name + time.
+// detected and rendered without repeating the name + time. `id` is the
+// sender-generated message id used to address later edits/deletes.
 export function appendChatMessage(opts: {
+  id: string;
   from: string;
+  isSelf: boolean;
   name: string;
   body: string;
   ts: number;
@@ -405,13 +408,406 @@ export function appendChatMessage(opts: {
   const tpl = document.querySelector<HTMLTemplateElement>("#chat-message");
   if (!tpl) throw new Error("chat-message template missing");
   const node = tpl.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
+  node.dataset.id = opts.id;
   node.dataset.from = opts.from;
+  if (opts.isSelf) node.classList.add("own");
   const who = node.querySelector<HTMLElement>(".who")!;
   who.textContent = opts.name;
   who.classList.add(`who-c${authorColorIndex(opts.from)}`);
   node.querySelector<HTMLElement>(".time")!.textContent = formatTime(opts.ts);
-  node.querySelector<HTMLElement>(".body")!.innerHTML = renderMarkdown(opts.body);
+  const bodyEl = node.querySelector<HTMLElement>(".body")!;
+  // dataset.source stashes the original markdown so the inline editor and
+  // later edits can round-trip without trying to recover the source from
+  // the rendered HTML.
+  bodyEl.dataset.source = opts.body;
+  bodyEl.innerHTML = renderMarkdown(opts.body);
+  // The kebab button is only meaningful on own messages; remote rows leave
+  // it hidden. CSS gates the visibility further (hover-reveal on pointer
+  // devices) and a long-press handler opens the menu on touch.
+  if (opts.isSelf) {
+    const btn = node.querySelector<HTMLButtonElement>(".msg-menu-btn");
+    if (btn) btn.hidden = false;
+  }
   appendChatNode(node);
+}
+
+// editChatMessage rewrites the body of a previously-rendered message and
+// appends a small "(edited)" tag near the timestamp. No-op if the id was
+// never rendered (the recipient may have joined after the original send,
+// or the message was already deleted).
+export function editChatMessage(id: string, body: string, _editedTs: number): void {
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  if (!list) return;
+  const node = list.querySelector<HTMLElement>(`.msg[data-id="${cssEscape(id)}"]`);
+  if (!node || node.classList.contains("deleted")) return;
+  // If the message is currently being edited locally, fold the in-flight
+  // editor; the broadcast author and the local user are the same person,
+  // so this only happens when an editor was open and the room layer just
+  // applied our own edit.
+  const editor = node.querySelector<HTMLElement>(".msg-editor");
+  editor?.remove();
+  const bodyEl = node.querySelector<HTMLElement>(".body");
+  if (bodyEl) {
+    bodyEl.dataset.source = body;
+    bodyEl.innerHTML = renderMarkdown(body);
+    bodyEl.hidden = false;
+  }
+  ensureEditedTag(node);
+}
+
+// deleteChatMessage replaces the message body with a tombstone and removes
+// the kebab affordance. The row stays in place so author grouping for
+// subsequent messages doesn't shift.
+export function deleteChatMessage(id: string): void {
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  if (!list) return;
+  const node = list.querySelector<HTMLElement>(`.msg[data-id="${cssEscape(id)}"]`);
+  if (!node) return;
+  node.classList.add("deleted");
+  const editor = node.querySelector<HTMLElement>(".msg-editor");
+  editor?.remove();
+  const bodyEl = node.querySelector<HTMLElement>(".body");
+  if (bodyEl) {
+    bodyEl.textContent = "(message deleted)";
+    bodyEl.hidden = false;
+  }
+  node.querySelector<HTMLElement>(".msg-edited-tag")?.remove();
+  node.querySelector<HTMLButtonElement>(".msg-menu-btn")?.remove();
+  closeMessageMenu();
+}
+
+function ensureEditedTag(node: HTMLElement): void {
+  if (node.querySelector(".msg-edited-tag")) return;
+  const tag = document.createElement("span");
+  tag.className = "msg-edited-tag";
+  tag.textContent = "(edited)";
+  // Place it right before the time span so it reads "(edited) 14:32".
+  const time = node.querySelector<HTMLElement>(".time");
+  if (time) node.insertBefore(tag, time);
+  else node.appendChild(tag);
+}
+
+// Single live popover and its anchor. We only ever show one menu at a time,
+// so a module-level handle is simpler than per-row state.
+interface ChatActionHandlers {
+  onEdit: (id: string, body: string) => boolean;
+  onDelete: (id: string) => boolean;
+}
+let chatActionHandlers: ChatActionHandlers | null = null;
+let openMenuRow: HTMLElement | null = null;
+let openMenuEl: HTMLElement | null = null;
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_TOLERANCE_PX = 8;
+
+// bindChatMessageActions installs the kebab + long-press handlers on the
+// chat list. Idempotent — safe to call once at startup.
+export function bindChatMessageActions(handlers: ChatActionHandlers): void {
+  chatActionHandlers = handlers;
+  const list = document.querySelector<HTMLElement>("#chat-messages");
+  if (!list) return;
+
+  list.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement | null;
+    if (!target) return;
+    const btn = target.closest<HTMLElement>(".msg-menu-btn");
+    if (!btn) return;
+    const row = btn.closest<HTMLElement>(".msg.own");
+    if (!row) return;
+    ev.stopPropagation();
+    if (openMenuRow === row) {
+      closeMessageMenu();
+      return;
+    }
+    openMessageMenu(row);
+  });
+
+  // Long-press: works for any pointer type but in practice only fires for
+  // touch — mouse users see the kebab on hover and tap-and-hold is usually
+  // text selection on desktop.
+  let pressTimer: number | null = null;
+  let pressRow: HTMLElement | null = null;
+  let pressX = 0;
+  let pressY = 0;
+  let suppressClick = false;
+
+  const cancelPress = () => {
+    if (pressTimer !== null) {
+      window.clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+    pressRow = null;
+  };
+
+  list.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType !== "touch") return;
+    const target = ev.target as HTMLElement | null;
+    const row = target?.closest<HTMLElement>(".msg.own") ?? null;
+    if (!row) return;
+    // Don't long-press if the user is interacting with the editor or the
+    // kebab button itself — those have their own click semantics.
+    if (target?.closest(".msg-menu-btn, .msg-editor")) return;
+    cancelPress();
+    pressRow = row;
+    pressX = ev.clientX;
+    pressY = ev.clientY;
+    pressTimer = window.setTimeout(() => {
+      pressTimer = null;
+      if (!pressRow) return;
+      suppressClick = true;
+      openMessageMenu(pressRow);
+      pressRow = null;
+    }, LONG_PRESS_MS);
+  });
+  list.addEventListener("pointermove", (ev) => {
+    if (!pressRow) return;
+    const dx = ev.clientX - pressX;
+    const dy = ev.clientY - pressY;
+    if (dx * dx + dy * dy > LONG_PRESS_TOLERANCE_PX * LONG_PRESS_TOLERANCE_PX) cancelPress();
+  });
+  list.addEventListener("pointerup", cancelPress);
+  list.addEventListener("pointercancel", cancelPress);
+  // Suppress the synthetic click that follows a long-press so it doesn't
+  // immediately re-toggle the menu we just opened.
+  list.addEventListener(
+    "click",
+    (ev) => {
+      if (suppressClick) {
+        suppressClick = false;
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    },
+    true,
+  );
+
+  // Outside-click and Esc dismiss the menu. The list's own scroll also
+  // closes it — recomputing the popover's position mid-scroll is fiddly
+  // and the user can just reopen it.
+  document.addEventListener("click", (ev) => {
+    if (!openMenuEl) return;
+    if (openMenuEl.contains(ev.target as Node)) return;
+    closeMessageMenu();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && openMenuEl) {
+      ev.stopPropagation();
+      closeMessageMenu();
+    }
+  });
+  list.addEventListener("scroll", () => {
+    if (openMenuEl) closeMessageMenu();
+  });
+  window.addEventListener("resize", () => {
+    if (openMenuEl) closeMessageMenu();
+  });
+}
+
+function openMessageMenu(row: HTMLElement): void {
+  closeMessageMenu();
+  const tpl = document.querySelector<HTMLTemplateElement>("#chat-msg-menu");
+  if (!tpl) return;
+  const menu = tpl.content.firstElementChild!.cloneNode(true) as HTMLElement;
+  document.body.appendChild(menu);
+  openMenuEl = menu;
+  openMenuRow = row;
+  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
+  btn?.setAttribute("aria-expanded", "true");
+
+  // Position the menu next to the row's kebab. Fall back to row's
+  // top-right if the kebab isn't visible (long-press on touch).
+  const anchor = btn ?? row;
+  const rect = anchor.getBoundingClientRect();
+  // Defer position until after layout so we know the menu's actual size.
+  const menuRect = menu.getBoundingClientRect();
+  const margin = 8;
+  let left = rect.right - menuRect.width;
+  let top = rect.bottom + 4;
+  // Keep it on-screen.
+  if (left < margin) left = margin;
+  if (left + menuRect.width > window.innerWidth - margin) {
+    left = window.innerWidth - menuRect.width - margin;
+  }
+  if (top + menuRect.height > window.innerHeight - margin) {
+    // Flip above the row if there's no room below.
+    top = rect.top - menuRect.height - 4;
+    if (top < margin) top = margin;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  menu.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement | null;
+    const item = target?.closest<HTMLElement>(".msg-menu-item");
+    if (!item) return;
+    ev.stopPropagation();
+    const action = item.dataset.action;
+    const id = row.dataset.id ?? "";
+    if (!id) {
+      closeMessageMenu();
+      return;
+    }
+    closeMessageMenu();
+    if (action === "edit") startInlineEdit(row, id);
+    else if (action === "delete") confirmInlineDelete(row, id);
+  });
+
+  // Focus the first item so keyboard users can act on it immediately.
+  menu.querySelector<HTMLButtonElement>(".msg-menu-item")?.focus();
+  // Arrow-key navigation between items.
+  menu.addEventListener("keydown", (ev) => {
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>(".msg-menu-item"));
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      items[(idx + 1 + items.length) % items.length]?.focus();
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      items[(idx - 1 + items.length) % items.length]?.focus();
+    }
+  });
+}
+
+function closeMessageMenu(): void {
+  openMenuEl?.remove();
+  openMenuEl = null;
+  if (openMenuRow) {
+    openMenuRow.querySelector<HTMLButtonElement>(".msg-menu-btn")?.setAttribute("aria-expanded", "false");
+    openMenuRow = null;
+  }
+}
+
+function startInlineEdit(row: HTMLElement, id: string): void {
+  if (row.classList.contains("deleted")) return;
+  if (row.querySelector(".msg-editor")) return;
+  const bodyEl = row.querySelector<HTMLElement>(".body");
+  if (!bodyEl) return;
+  // Pull the markdown source we stashed at append/edit time so the editor
+  // round-trips formatting (otherwise we'd be editing rendered HTML's
+  // textContent, losing the markdown).
+  const original = bodyEl.dataset.source ?? bodyEl.textContent ?? "";
+  bodyEl.hidden = true;
+  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
+  if (btn) btn.hidden = true;
+
+  const editor = document.createElement("span");
+  editor.className = "msg-editor";
+  const input = document.createElement("textarea");
+  input.value = original;
+  input.maxLength = 2000;
+  input.rows = Math.min(6, Math.max(1, original.split("\n").length));
+  input.className = "msg-editor-input";
+  input.setAttribute("aria-label", "Edit message");
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "msg-editor-save primary";
+  save.textContent = "Save";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "msg-editor-cancel";
+  cancel.textContent = "Cancel";
+  editor.append(input, save, cancel);
+  // Insert directly after the body so it sits in the same head-line flow.
+  bodyEl.parentElement?.insertBefore(editor, bodyEl.nextSibling);
+
+  let done = false;
+  const restore = () => {
+    if (done) return;
+    done = true;
+    editor.remove();
+    bodyEl.hidden = false;
+    if (btn) btn.hidden = false;
+  };
+  const commit = () => {
+    if (done) return;
+    const next = input.value.trim();
+    if (!next) {
+      // Empty: bail without sending. To delete, the user picks Delete.
+      restore();
+      return;
+    }
+    if (next === original) {
+      restore();
+      return;
+    }
+    const ok = chatActionHandlers?.onEdit(id, next) ?? false;
+    if (!ok) {
+      // Couldn't send (no room, lost authorship after reconnect, etc.).
+      restore();
+      return;
+    }
+    // The room layer fires onChatEdited synchronously, which calls
+    // editChatMessage and removes this editor. Belt-and-suspenders:
+    // restore in case the callback wiring ever changes.
+    done = true;
+  };
+
+  // Plain Enter saves; Shift/Ctrl/Cmd/Alt+Enter inserts a newline. Matches
+  // the composer's behavior.
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.isComposing) {
+      if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      ev.preventDefault();
+      commit();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      restore();
+    }
+  });
+  save.addEventListener("click", commit);
+  cancel.addEventListener("click", restore);
+
+  input.focus();
+  input.select();
+}
+
+function confirmInlineDelete(row: HTMLElement, id: string): void {
+  if (row.classList.contains("deleted")) return;
+  if (row.querySelector(".msg-editor")) return;
+  const bodyEl = row.querySelector<HTMLElement>(".body");
+  if (!bodyEl) return;
+  const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
+  if (btn) btn.hidden = true;
+
+  const confirm = document.createElement("span");
+  confirm.className = "msg-editor msg-confirm";
+  const label = document.createElement("span");
+  label.className = "msg-confirm-label";
+  label.textContent = "Delete message?";
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "msg-editor-save msg-confirm-danger";
+  yes.textContent = "Delete";
+  const no = document.createElement("button");
+  no.type = "button";
+  no.className = "msg-editor-cancel";
+  no.textContent = "Cancel";
+  confirm.append(label, yes, no);
+  bodyEl.parentElement?.insertBefore(confirm, bodyEl.nextSibling);
+  bodyEl.hidden = true;
+
+  let done = false;
+  const restore = () => {
+    if (done) return;
+    done = true;
+    confirm.remove();
+    bodyEl.hidden = false;
+    if (btn) btn.hidden = false;
+  };
+  yes.addEventListener("click", () => {
+    if (done) return;
+    const ok = chatActionHandlers?.onDelete(id) ?? false;
+    if (!ok) restore();
+    // Success path: room fires onChatDeleted → deleteChatMessage replaces
+    // body with a tombstone and removes the confirm widget.
+  });
+  no.addEventListener("click", restore);
+  confirm.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      restore();
+    }
+  });
+  yes.focus();
 }
 
 // Number of color slots defined in CSS (.who-c0 ... .who-cN-1). Keep in

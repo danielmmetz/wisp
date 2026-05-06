@@ -60,8 +60,16 @@ export interface PeerCallbacks {
   onConnectionChange: (state: RTCPeerConnectionState) => void;
   // onChat fires when a chat message arrives on the data channel. body has
   // already been validated as a string. ts is the sender's epoch ms; not
-  // trusted for ordering, just shown as the timestamp of the message.
-  onChat?: (body: string, ts: number) => void;
+  // trusted for ordering, just shown as the timestamp of the message. id is
+  // a sender-generated string that uniquely identifies the message within
+  // the room; later edit/delete events reference this id.
+  onChat?: (id: string, body: string, ts: number) => void;
+  // onChatEdit fires when the author broadcasts an edit. id matches an
+  // earlier onChat. editedTs is the sender's epoch ms at edit time.
+  onChatEdit?: (id: string, body: string, editedTs: number) => void;
+  // onChatDelete fires when the author broadcasts a delete. id matches an
+  // earlier onChat.
+  onChatDelete?: (id: string) => void;
 }
 
 type RxKind = "audio" | "screen" | "screen-audio";
@@ -381,11 +389,27 @@ export class Peer {
   // sendChat dispatches a single chat message to this peer over the chat
   // data channel. Returns false when the channel isn't open yet — the room
   // layer can decide whether to skip or buffer.
-  sendChat(body: string, ts: number): boolean {
+  sendChat(id: string, body: string, ts: number): boolean {
+    return this.sendChatEnvelope({ kind: "chat", id, body, ts });
+  }
+
+  // sendChatEdit broadcasts an edit of a previously-sent message. The peer
+  // on the other side enforces author identity (only the original sender
+  // can edit) — the channel is per-peer, so the author is implicit.
+  sendChatEdit(id: string, body: string, editedTs: number): boolean {
+    return this.sendChatEnvelope({ kind: "chat-edit", id, body, editedTs });
+  }
+
+  // sendChatDelete broadcasts a delete of a previously-sent message.
+  sendChatDelete(id: string): boolean {
+    return this.sendChatEnvelope({ kind: "chat-delete", id });
+  }
+
+  private sendChatEnvelope(env: object): boolean {
     const dc = this.chatChannel;
     if (!dc || dc.readyState !== "open") return false;
     try {
-      dc.send(JSON.stringify({ kind: "chat", body, ts }));
+      dc.send(JSON.stringify(env));
       return true;
     } catch (err) {
       console.warn("chat send failed", err);
@@ -404,11 +428,31 @@ export class Peer {
         return;
       }
       if (!parsed || typeof parsed !== "object") return;
-      const m = parsed as { kind?: unknown; body?: unknown; ts?: unknown };
-      if (m.kind !== "chat") return;
-      if (typeof m.body !== "string") return;
-      const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : Date.now();
-      this.cb.onChat?.(m.body, ts);
+      const m = parsed as {
+        kind?: unknown;
+        id?: unknown;
+        body?: unknown;
+        ts?: unknown;
+        editedTs?: unknown;
+      };
+      if (typeof m.id !== "string" || m.id === "") return;
+      if (m.kind === "chat") {
+        if (typeof m.body !== "string") return;
+        const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : Date.now();
+        this.cb.onChat?.(m.id, m.body, ts);
+        return;
+      }
+      if (m.kind === "chat-edit") {
+        if (typeof m.body !== "string") return;
+        const editedTs =
+          typeof m.editedTs === "number" && Number.isFinite(m.editedTs) ? m.editedTs : Date.now();
+        this.cb.onChatEdit?.(m.id, m.body, editedTs);
+        return;
+      }
+      if (m.kind === "chat-delete") {
+        this.cb.onChatDelete?.(m.id);
+        return;
+      }
     });
   }
 

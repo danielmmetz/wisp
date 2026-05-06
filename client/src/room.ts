@@ -39,6 +39,18 @@ export type { ShareMode } from "./screen.ts";
 import type { MicCapture } from "./audio.ts";
 import type { ServerEnvelope, SignalData, TurnCreds, PeerInfo } from "./wire.ts";
 
+// newChatId returns a short, unique-enough identifier for a chat message.
+// It only needs to be unique among messages from this client during this
+// session (recipients namespace ids by author peer ID). 16 hex chars from
+// crypto.getRandomValues comfortably covers a single chat session.
+function newChatId(): string {
+  const buf = new Uint8Array(8);
+  crypto.getRandomValues(buf);
+  let s = "";
+  for (const b of buf) s += b.toString(16).padStart(2, "0");
+  return s;
+}
+
 // Reconnect backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 30s. Cap at 30s and stop
 // after MAX_RECONNECT_ATTEMPTS attempts so we don't spin forever for a
 // truly-dead network.
@@ -46,6 +58,9 @@ const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length;
 
 export interface ChatMessage {
+  // id uniquely identifies this message within the room (sender-generated
+  // at send time). Used to address later edits and deletes.
+  id: string;
   // from is the author's peer ID — equal to our local peer ID when isSelf
   // is true. UI uses it as a stable handle to update past bubbles when
   // the author renames.
@@ -71,6 +86,11 @@ export interface RoomCallbacks {
   // (healthy=false) and again when decryption recovers (healthy=true).
   onCipherHealth: (id: string, healthy: boolean) => void;
   onChatMessage: (msg: ChatMessage) => void;
+  // onChatEdited fires when an existing message is edited by its author.
+  // The UI looks up the message by id and rewrites the body.
+  onChatEdited: (info: { id: string; body: string; editedTs: number }) => void;
+  // onChatDeleted fires when an existing message is deleted by its author.
+  onChatDeleted: (info: { id: string }) => void;
   // onPresenterChanged fires when the room's current screen-sharer changes:
   // peerId is the new presenter's ID (local or remote), or null when nobody
   // is sharing. stream is the screen MediaStream when applicable, or null
@@ -104,6 +124,13 @@ export class Room {
   // (including self). Used to attribute chat messages and to surface the
   // departing name on peer_left for the system "X left" line.
   private names = new Map<string, string>();
+  // chatAuthors maps message id -> author peer ID for every chat message
+  // we've seen (own + remote). Used to verify that incoming edit/delete
+  // events come from the original author's data channel; an event arriving
+  // on a different peer's channel is dropped. Cleaned up on peer_left for
+  // remote authors so the map doesn't grow without bound; own ids stay so
+  // we can keep editing/deleting after others come and go.
+  private chatAuthors = new Map<string, string>();
   private localName = "";
   // iceRetried tracks per-peer ICE-restart attempts so we don't loop on a
   // truly-dead path.
@@ -178,14 +205,41 @@ export class Room {
     const trimmed = body.trim();
     if (!trimmed || !this.localId) return false;
     const ts = Date.now();
-    for (const peer of this.peers.values()) peer.sendChat(trimmed, ts);
+    const id = newChatId();
+    this.chatAuthors.set(id, this.localId);
+    for (const peer of this.peers.values()) peer.sendChat(id, trimmed, ts);
     this.cb.onChatMessage({
+      id,
       from: this.localId,
       isSelf: true,
       name: this.localName,
       body: trimmed,
       ts,
     });
+    return true;
+  }
+
+  // editChat broadcasts an edit of a previously-sent message and updates
+  // the local UI. Only own messages can be edited; the local author check
+  // mirrors what receivers enforce. Empty/whitespace-only bodies are
+  // rejected (use deleteChat instead).
+  editChat(id: string, body: string): boolean {
+    const trimmed = body.trim();
+    if (!trimmed || !this.localId) return false;
+    if (this.chatAuthors.get(id) !== this.localId) return false;
+    const editedTs = Date.now();
+    for (const peer of this.peers.values()) peer.sendChatEdit(id, trimmed, editedTs);
+    this.cb.onChatEdited({ id, body: trimmed, editedTs });
+    return true;
+  }
+
+  // deleteChat broadcasts a delete of a previously-sent message and updates
+  // the local UI.
+  deleteChat(id: string): boolean {
+    if (!this.localId) return false;
+    if (this.chatAuthors.get(id) !== this.localId) return false;
+    for (const peer of this.peers.values()) peer.sendChatDelete(id);
+    this.cb.onChatDeleted({ id });
     return true;
   }
 
@@ -301,6 +355,7 @@ export class Room {
     this.peers.clear();
     this.iceRetried.clear();
     this.names.clear();
+    this.chatAuthors.clear();
     this.localName = "";
     this.stopSelfVAD?.();
     this.stopSelfVAD = null;
@@ -415,6 +470,13 @@ export class Room {
           this.iceRetried.delete(peerId);
           const name = this.names.get(peerId) ?? "";
           this.names.delete(peerId);
+          // Drop chatAuthors entries authored by the departing peer so the
+          // map doesn't grow without bound across long sessions. Their
+          // historical messages stay rendered but become uneditable —
+          // matching how P2P chat already behaves: only the original
+          // author can edit, and they're gone.
+          for (const [id, author] of this.chatAuthors)
+            if (author === peerId) this.chatAuthors.delete(id);
           this.cb.onPeerRemoved(peerId, name);
           playLeaveTone();
         }
@@ -513,9 +575,21 @@ export class Room {
         onTrack: (stream) => this.cb.onRemoteStream(info.id, stream),
         onScreenTrack: (stream) => this.handleRemoteScreen(info.id, stream),
         onConnectionChange: (state) => this.handleConnectionChange(info.id, state),
-        onChat: (body, ts) => {
+        onChat: (id, body, ts) => {
+          this.chatAuthors.set(id, info.id);
           const name = this.names.get(info.id) ?? info.name;
-          this.cb.onChatMessage({ from: info.id, isSelf: false, name, body, ts });
+          this.cb.onChatMessage({ id, from: info.id, isSelf: false, name, body, ts });
+        },
+        onChatEdit: (id, body, editedTs) => {
+          // Only honor edits authored by the peer whose channel they
+          // arrived on. Unknown ids are silently dropped — they belong to
+          // a message we never received (we joined after it was sent).
+          if (this.chatAuthors.get(id) !== info.id) return;
+          this.cb.onChatEdited({ id, body, editedTs });
+        },
+        onChatDelete: (id) => {
+          if (this.chatAuthors.get(id) !== info.id) return;
+          this.cb.onChatDeleted({ id });
         },
       },
     });

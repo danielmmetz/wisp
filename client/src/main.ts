@@ -17,11 +17,14 @@ import {
   appendChatMessage,
   appendChatSystem,
   appendPeerRow,
+  bindChatMessageActions,
   bindScreenShareButton,
   bindSelfBlock,
   clearChat,
   createMicLevelMeter,
   createPresenterView,
+  deleteChatMessage,
+  editChatMessage,
   fillDeviceSelect,
   makePeerRow,
   releaseAuthorColor,
@@ -216,11 +219,19 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
     },
     onChatMessage: (msg) => {
       appendChatMessage({
+        id: msg.id,
         from: msg.from,
+        isSelf: msg.isSelf,
         name: msg.name,
         body: msg.body,
         ts: msg.ts,
       });
+    },
+    onChatEdited: (info) => {
+      editChatMessage(info.id, info.body, info.editedTs);
+    },
+    onChatDeleted: (info) => {
+      deleteChatMessage(info.id);
     },
     onPresenterChanged: (peerId, stream) => {
       // The pane never auto-opens; the rail indicator is the entry point.
@@ -658,6 +669,10 @@ function init(): void {
       }
     });
   }
+  bindChatMessageActions({
+    onEdit: (id, body) => room?.editChat(id, body) ?? false,
+    onDelete: (id) => room?.deleteChat(id) ?? false,
+  });
   $("#brand").addEventListener("click", (ev) => {
     if (!room) return;
     ev.preventDefault();

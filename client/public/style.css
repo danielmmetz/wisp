@@ -621,6 +621,7 @@ input.name-edit {
 }
 
 .msg {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 4.2em;
   column-gap: 0.9rem;
@@ -736,6 +737,148 @@ input.name-edit {
 }
 .msg.continued .head-line .who { display: none; }
 .msg.continued .time { visibility: hidden; }
+
+/* Kebab "more actions" affordance, only rendered for the local user's own
+ * messages. The button itself has [hidden] when the row isn't .own; for
+ * .own rows it's visible by default (touch path) and faded out on
+ * hover-capable pointer devices until the row is hovered or focused. */
+.msg-menu-btn {
+  position: absolute;
+  top: -2px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+  z-index: 1;
+}
+.msg-menu-btn:hover { color: var(--fg); }
+.msg-menu-btn[hidden] { display: none; }
+/* Hidden by default everywhere; revealed on hover only on pointer devices.
+ * Touch users open the menu via long-press, so leaving the button visually
+ * hidden there avoids a kebab on every own row. Keyboard focus and an open
+ * menu always reveal it so neither is invisible to assistive tech. */
+.msg.own .msg-menu-btn { opacity: 0; transition: opacity 80ms ease; }
+.msg.own:focus-within .msg-menu-btn,
+.msg.own .msg-menu-btn[aria-expanded="true"],
+.msg.own .msg-menu-btn:focus-visible { opacity: 1; }
+@media (hover: hover) {
+  .msg.own:hover .msg-menu-btn { opacity: 1; }
+}
+
+/* Tombstone for a deleted message — body text is replaced and de-emphasized
+ * but the row stays in place so author-grouping for adjacent messages
+ * doesn't shift. */
+.msg.deleted .head-line .body {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* "(edited)" tag sits between the body and the timestamp. Inline-flow so it
+ * wraps with the body on narrow widths instead of forcing its own column. */
+.msg-edited-tag {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-left: 0.4em;
+}
+/* When a row continues an author group, the edited tag still surfaces — but
+ * only if there's enough room. Hide it on continued rows to keep them
+ * looking clean; the edit applied so the body is already current. */
+.msg.continued .msg-edited-tag { display: none; }
+
+/* Popover menu opened by the kebab (or by long-press on touch). Appended
+ * to <body> so it isn't clipped by the chat scroll container. */
+.msg-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 160px;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.msg-menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  min-height: 36px;
+}
+.msg-menu-item:hover,
+.msg-menu-item:focus-visible {
+  background: var(--hover, rgba(0, 0, 0, 0.06));
+  outline: none;
+}
+.msg-menu-item-danger { color: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  .msg-menu-item-danger { color: #ff6b5a; }
+}
+
+/* Inline editor and inline delete-confirm. Both swap in for the .body span
+ * inside .head-line and keep the row's column geometry intact. */
+.msg-editor {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 2px;
+}
+.msg-editor-input {
+  flex: 1 1 12em;
+  min-width: 0;
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.2));
+  border-radius: 4px;
+  background: var(--bg, #fff);
+  color: var(--fg);
+  resize: vertical;
+}
+.msg-editor-save,
+.msg-editor-cancel {
+  appearance: none;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  background: var(--bg, #fff);
+  color: var(--fg);
+  cursor: pointer;
+  min-height: 32px;
+}
+.msg-editor-save.primary {
+  background: var(--accent, #2a6df4);
+  border-color: var(--accent, #2a6df4);
+  color: #fff;
+}
+.msg-confirm-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.msg-confirm-danger {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
+}
 .msg.system {
   grid-column: 1 / -1;
   text-align: center;
