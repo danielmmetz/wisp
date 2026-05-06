@@ -205,16 +205,33 @@ export function attachRemoteStream(stream: MediaStream): {
   document.body.appendChild(el);
   el.play().catch((err) => console.warn("remote audio play() failed", err));
 
-  const src = audioCtx.createMediaStreamSource(stream);
   const gain = audioCtx.createGain();
-  src.connect(gain).connect(audioCtx.destination);
+  gain.connect(audioCtx.destination);
+  // The stream may be audio-less at attach time — screen shares hand us the
+  // video track via ontrack first and the audio track (if any) lands later.
+  // Firefox's getDisplayMedia never produces audio at all, so wire() may
+  // never run. createMediaStreamSource throws on an audio-less stream, so
+  // wait for addtrack rather than calling it eagerly.
+  let src: MediaStreamAudioSourceNode | null = null;
+  let closed = false;
+  const wire = () => {
+    if (closed || src) return;
+    if (stream.getAudioTracks().length === 0) return;
+    src = audioCtx.createMediaStreamSource(stream);
+    src.connect(gain);
+  };
+  wire();
+  stream.addEventListener("addtrack", wire);
+
   return {
     setVolume: (v) => {
       gain.gain.value = Math.max(0, v);
     },
     close: () => {
+      closed = true;
+      stream.removeEventListener("addtrack", wire);
       gain.disconnect();
-      src.disconnect();
+      src?.disconnect();
       el.srcObject = null;
       el.remove();
     },

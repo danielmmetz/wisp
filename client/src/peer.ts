@@ -434,6 +434,11 @@ export class Peer {
     try {
       const offer = await this.pc.createOffer(opts);
       if (this.isClosed()) return;
+      // Glare: a remote offer that landed while createOffer was pending may
+      // have already moved us out of "stable" via setRemoteDescription.
+      // setLocalDescription with our now-stale offer would throw; bail and
+      // let the remote offer's answer carry our local senders instead.
+      if (this.pc.signalingState !== "stable") return;
       offer.sdp = munge(offer.sdp);
       await this.pc.setLocalDescription(offer);
       if (this.pc.localDescription) {
