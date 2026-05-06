@@ -106,7 +106,25 @@ let levelMeter: MicLevelMeter | null = null;
 
 async function ensureMic(): Promise<MicCapture> {
   if (!mic) {
-    mic = await startMic({ deviceId: prefs.inputDeviceId });
+    try {
+      mic = await startMic({ deviceId: prefs.inputDeviceId });
+    } catch (err) {
+      // Browsers rotate the opaque deviceId hash across sessions/permission
+      // grants, so a saved preference can become unmatchable and getUserMedia
+      // throws OverconstrainedError. Drop the stale ID and retry with the
+      // system default rather than dead-ending the join.
+      if (
+        prefs.inputDeviceId &&
+        err instanceof Error &&
+        err.name === "OverconstrainedError"
+      ) {
+        prefs.inputDeviceId = "";
+        savePrefs();
+        mic = await startMic({});
+      } else {
+        throw err;
+      }
+    }
     if (prefs.outputDeviceId) void setOutputDevice(prefs.outputDeviceId);
     // After permission is granted, device labels become readable; refresh the
     // pickers so the user sees friendly names if they open settings later.
@@ -451,6 +469,15 @@ function readNameFromLobby(): string {
   return raw;
 }
 
+// Some DOMException-derived errors (notably Chrome's OverconstrainedError)
+// have an empty .message, which would render as a blank lobby banner that
+// looks like the click did nothing. Fall back to the error name so the
+// user always sees something actionable.
+function formatError(err: unknown): string {
+  if (err instanceof Error) return err.message || err.name || String(err);
+  return String(err);
+}
+
 async function startCreate(): Promise<void> {
   setLobbyError(null);
   try {
@@ -462,7 +489,7 @@ async function startCreate(): Promise<void> {
     room = new Room(m, buildRoomCallbacks());
     await room.create(readNameFromLobby());
   } catch (err) {
-    setLobbyError(err instanceof Error ? err.message : String(err));
+    setLobbyError(formatError(err));
   }
 }
 
@@ -480,7 +507,7 @@ async function startJoin(code: string): Promise<void> {
     room = new Room(m, buildRoomCallbacks());
     await room.join(code, readNameFromLobby());
   } catch (err) {
-    setLobbyError(err instanceof Error ? err.message : String(err));
+    setLobbyError(formatError(err));
   }
 }
 
@@ -584,7 +611,7 @@ function initSettings(): void {
         testActive = true;
         testBtn.textContent = "stop test";
       } catch (err) {
-        setLobbyError(err instanceof Error ? err.message : String(err));
+        setLobbyError(formatError(err));
       }
     });
   }
