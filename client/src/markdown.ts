@@ -114,7 +114,13 @@ export function renderMarkdown(input: string): string {
   // render as a code block; on the multi-line form the optional info
   // string before the first newline is stripped (we don't do syntax
   // highlighting).
-  s = s.replace(/```([\s\S]*?)```/g, (_m, content: string) => {
+  //
+  // The optional `\n?` on each end soaks up the source newline that
+  // typically separates a fence from the surrounding paragraph. Without it,
+  // pre-wrap on the body would render that newline AND the block-level
+  // box would start its own line, producing an extra blank row above and
+  // below every code block.
+  s = s.replace(/\n?```([\s\S]*?)```\n?/g, (_m, content: string) => {
     const nl = content.indexOf("\n");
     const code =
       nl >= 0 ? content.slice(nl + 1).replace(/\n+$/, "") : content;
