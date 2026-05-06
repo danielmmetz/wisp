@@ -146,6 +146,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
         },
         onLeaveRequest: () => leaveRoom(),
       });
+      // The mic was pre-muted in startCreate/startJoin; sync the UI.
+      selfBlock.setMuted(true);
       selfBlock.setQuality("unknown");
       refreshPeerCount();
       startQualityPolling();
@@ -379,6 +381,10 @@ async function startCreate(): Promise<void> {
   setLobbyError(null);
   try {
     const m = await ensureMic();
+    // Disable the track before the Room hands it to the peer connection so
+    // the outbound sender ships silence from packet zero — the user is muted
+    // from the very first byte, not just after onJoined fires.
+    m.setMuted(true);
     room = new Room(m, buildRoomCallbacks());
     await room.create(readNameFromLobby());
   } catch (err) {
@@ -394,6 +400,9 @@ async function startJoin(code: string): Promise<void> {
   }
   try {
     const m = await ensureMic();
+    // See startCreate: pre-mute so the peer connection ships silence from
+    // the start.
+    m.setMuted(true);
     room = new Room(m, buildRoomCallbacks());
     await room.join(code, readNameFromLobby());
   } catch (err) {
