@@ -24,6 +24,7 @@ import {
   createPresenterView,
   fillDeviceSelect,
   makePeerRow,
+  releaseAuthorColor,
   renameChatAuthor,
   setLobbyError,
   setPeerCount,
@@ -174,6 +175,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.destroy();
       rows.delete(id);
       remoteStreams.delete(id);
+      releaseAuthorColor(id);
       refreshPeerCount();
       if (name) appendChatSystem(`${name} left`);
     },

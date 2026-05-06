@@ -623,24 +623,48 @@ input.name-edit {
   margin-right: 0.4em;
   color: var(--who, var(--fg));
 }
-/* Per-author color slots. The slot is picked deterministically from the
- * peer ID so a given person stays the same color for the whole session.
- * Tuned for legibility on --card in each theme. */
-.who-c0 { --who: #b91c1c; }
-.who-c1 { --who: #b45309; }
-.who-c2 { --who: #15803d; }
-.who-c3 { --who: #0f766e; }
-.who-c4 { --who: #1d4ed8; }
-.who-c5 { --who: #6d28d9; }
-.who-c6 { --who: #be185d; }
+/* Per-author color slots. Slots are first-come-first-served and reclaimed
+ * when a peer leaves (see authorColorIndex / releaseAuthorColor in ui.ts),
+ * so the first 16 distinct authors in a session are guaranteed unique
+ * colors. Hues come from matplotlib's tab20 + tab20b "darks" — categorical
+ * palette designed for up to 20 distinct series; calmer than saturated
+ * web colors. Dark-mode pairs come from the same family's lighter shades. */
+.who-c0  { --who: #1f77b4; }
+.who-c1  { --who: #ff7f0e; }
+.who-c2  { --who: #2ca02c; }
+.who-c3  { --who: #d62728; }
+.who-c4  { --who: #9467bd; }
+.who-c5  { --who: #8c564b; }
+.who-c6  { --who: #e377c2; }
+.who-c7  { --who: #bcbd22; }
+.who-c8  { --who: #17becf; }
+.who-c9  { --who: #393b79; }
+.who-c10 { --who: #843c39; }
+.who-c11 { --who: #7b4173; }
+.who-c12 { --who: #637939; }
+.who-c13 { --who: #8c6d31; }
+.who-c14 { --who: #ad494a; }
+.who-c15 { --who: #5254a3; }
 @media (prefers-color-scheme: dark) {
-  .who-c0 { --who: #f87171; }
-  .who-c1 { --who: #fbbf24; }
-  .who-c2 { --who: #4ade80; }
-  .who-c3 { --who: #5eead4; }
-  .who-c4 { --who: #93c5fd; }
-  .who-c5 { --who: #c4b5fd; }
-  .who-c6 { --who: #f9a8d4; }
+  .who-c0  { --who: #aec7e8; }
+  .who-c1  { --who: #ffbb78; }
+  .who-c2  { --who: #98df8a; }
+  .who-c3  { --who: #ff9896; }
+  .who-c4  { --who: #c5b0d5; }
+  .who-c5  { --who: #c49c94; }
+  .who-c6  { --who: #f7b6d2; }
+  .who-c7  { --who: #dbdb8d; }
+  .who-c8  { --who: #9edae5; }
+  .who-c9  { --who: #9c9ede; }
+  .who-c10 { --who: #e7969c; }
+  .who-c11 { --who: #ce6dbd; }
+  .who-c12 { --who: #cedb9c; }
+  .who-c13 { --who: #e7cb94; }
+  .who-c14 { --who: #d6616b; }
+  /* tab20b's natural pair for c15 (#5254a3) is also #9c9ede, which would
+   * collide with c9. Use the medium indigo from the same hue ladder
+   * instead so c9/c15 stay distinct in dark mode too. */
+  .who-c15 { --who: #6b6ecf; }
 }
 /* pre-wrap on the body preserves user-entered runs of spaces and newlines.
  * Keep it scoped to .body — pre-wrap on .head-line would render the

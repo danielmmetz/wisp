@@ -408,19 +408,50 @@ export function appendChatMessage(opts: {
 
 // Number of color slots defined in CSS (.who-c0 ... .who-cN-1). Keep in
 // sync with style.css.
-const AUTHOR_COLOR_SLOTS = 7;
+const AUTHOR_COLOR_SLOTS = 16;
 
-// authorColorIndex maps a peer ID to a stable slot in [0, AUTHOR_COLOR_SLOTS).
-// FNV-1a over the UTF-16 code units — collisions in a small room are
-// possible but tolerable; the goal is "different from your neighbor",
-// not a unique color per person.
+// First-come-first-served slot allocation, scoped to this client's view.
+// Authors take the lowest unused slot on first sight, so the first
+// AUTHOR_COLOR_SLOTS distinct authors at any one time are guaranteed
+// unique colors. releaseAuthorColor frees a slot when a peer leaves so a
+// later joiner can take it — keeps churning rooms collision-free. Only
+// when more than AUTHOR_COLOR_SLOTS authors are *simultaneously* in the
+// room do we fall back to hashing.
+const authorSlots = new Map<string, number>();
+
 function authorColorIndex(from: string): number {
+  const cached = authorSlots.get(from);
+  if (cached !== undefined) return cached;
+  if (authorSlots.size < AUTHOR_COLOR_SLOTS) {
+    const used = new Set(authorSlots.values());
+    for (let i = 0; i < AUTHOR_COLOR_SLOTS; i++) {
+      if (!used.has(i)) {
+        authorSlots.set(from, i);
+        return i;
+      }
+    }
+  }
+  // Slots exhausted — degrade to FNV-1a over the peer ID. Cache the
+  // result so the same author keeps the same color on later messages.
   let h = 0x811c9dc5;
   for (let i = 0; i < from.length; i++) {
     h ^= from.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
-  return (h >>> 0) % AUTHOR_COLOR_SLOTS;
+  const slot = (h >>> 0) % AUTHOR_COLOR_SLOTS;
+  authorSlots.set(from, slot);
+  return slot;
+}
+
+// releaseAuthorColor frees the slot held by `from` so a later joiner can
+// claim it. Old chat messages from `from` keep their original .who-cN
+// class on the DOM, so they continue rendering in the original color
+// until those nodes are removed; only NEW messages from a peer that
+// later inherits this slot will show in the reused color, and those
+// messages display under the new peer's name. No-op if `from` never
+// took a slot (e.g., a peer who never spoke).
+export function releaseAuthorColor(from: string): void {
+  authorSlots.delete(from);
 }
 
 // renameChatAuthor rewrites the displayed name on every existing chat
