@@ -9,6 +9,9 @@
 /cmd/wisp/web/favicon.svg
 /cmd/wisp/web/index.html
 /cmd/wisp/web/style.css
+# Precompressed sibling artifacts (.br and .gz) emitted by build.mjs.
+/cmd/wisp/web/**/*.br
+/cmd/wisp/web/**/*.gz
 
 # JS deps
 /client/node_modules/

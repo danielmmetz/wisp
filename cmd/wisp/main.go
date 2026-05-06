@@ -10,9 +10,11 @@ import (
 	"fmt"
 	iofs "io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -120,11 +122,43 @@ func mainE(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("hashing web assets: %w", err)
 	}
+	encoded, hidden, err := loadEncodedAssets(webSub)
+	if err != nil {
+		return fmt.Errorf("loading precompressed web assets: %w", err)
+	}
 	fileSrv := http.FileServer(http.FS(webSub))
 	static := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if etag, ok := etags[r.URL.Path]; ok {
+		// Precompressed sibling files (foo.css.br, foo.css.gz) are
+		// implementation detail; clients shouldn't fetch them directly.
+		if hidden[r.URL.Path] {
+			http.NotFound(w, r)
+			return
+		}
+		etag, hasEtag := etags[r.URL.Path]
+		if hasEtag {
 			w.Header().Set("Etag", etag)
 			w.Header().Set("Cache-Control", "no-cache")
+		}
+		// Vary on Accept-Encoding even for fall-through assets so caches
+		// don't cross-feed compressed and identity bodies.
+		w.Header().Add("Vary", "Accept-Encoding")
+		if asset, ok := encoded[r.URL.Path]; ok {
+			body, enc := negotiateEncoding(r, asset)
+			if body != nil {
+				w.Header().Set("Content-Type", asset.contentType)
+				w.Header().Set("Content-Encoding", enc)
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+				// Only honor If-None-Match for the encoded representation.
+				if hasEtag && strings.Contains(r.Header.Get("If-None-Match"), etag) {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				if r.Method == http.MethodHead {
+					return
+				}
+				_, _ = w.Write(body)
+				return
+			}
 		}
 		if strings.HasSuffix(r.URL.Path, ".wasm") {
 			w.Header().Set("Content-Type", "application/wasm")
@@ -166,6 +200,133 @@ func mainE(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("shutting down: %w", shutdownErr)
 	}
 	return nil
+}
+
+// encodedAsset is a precompressed embedded file together with the Content-Type
+// of its decoded representation. The content type comes from the file's
+// extension (after stripping the encoding suffix) because http.ResponseWriter's
+// auto-sniff would inspect the encoded header instead of the underlying bytes
+// once Content-Encoding is set. Either body may be nil if the build didn't
+// produce that variant.
+type encodedAsset struct {
+	contentType string
+	br          []byte
+	gz          []byte
+}
+
+// loadEncodedAssets scans fsys for precompressed sibling files (foo.br,
+// foo.gz) emitted by the client build. Returns the per-path encoded bodies
+// plus the set of URL paths that should 404 because they're encoding
+// implementation detail rather than user-visible assets.
+func loadEncodedAssets(fsys iofs.FS) (map[string]encodedAsset, map[string]bool, error) {
+	files := map[string]bool{}
+	if err := iofs.WalkDir(fsys, ".", func(p string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walking %q: %w", p, err)
+		}
+		if !d.IsDir() {
+			files[p] = true
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("walking embedded assets: %w", err)
+	}
+
+	out := map[string]encodedAsset{}
+	hidden := map[string]bool{}
+	for p := range files {
+		// Process each base file once. .br/.gz are sibling encodings only
+		// when their stripped sibling also exists; .tar.gz stands alone.
+		if isEncodingSibling(p, files) {
+			hidden["/"+p] = true
+			continue
+		}
+		brPath := p + ".br"
+		gzPath := p + ".gz"
+		var br, gz []byte
+		if files[brPath] {
+			b, err := iofs.ReadFile(fsys, brPath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("reading %q: %w", brPath, err)
+			}
+			br = b
+		}
+		if files[gzPath] {
+			b, err := iofs.ReadFile(fsys, gzPath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("reading %q: %w", gzPath, err)
+			}
+			gz = b
+		}
+		if br == nil && gz == nil {
+			continue
+		}
+		ct := mime.TypeByExtension(path.Ext(p))
+		if ct == "" && strings.HasSuffix(p, ".wasm") {
+			ct = "application/wasm"
+		}
+		if ct == "" {
+			// http.FileServer will sniff from the original bytes, but we
+			// need a concrete type since Content-Encoding suppresses sniff.
+			raw, err := iofs.ReadFile(fsys, p)
+			if err != nil {
+				return nil, nil, fmt.Errorf("reading %q: %w", p, err)
+			}
+			ct = http.DetectContentType(raw)
+		}
+		entry := encodedAsset{contentType: ct, br: br, gz: gz}
+		out["/"+p] = entry
+		if p == "index.html" {
+			out["/"] = entry
+		}
+	}
+	return out, hidden, nil
+}
+
+// isEncodingSibling reports whether p is a precompressed sibling (foo.br or
+// foo.gz) of another file in the set. The .tar.gz model archive is its own
+// payload, not a sibling, because there's no .tar without it.
+func isEncodingSibling(p string, files map[string]bool) bool {
+	for _, suffix := range []string{".br", ".gz"} {
+		if strings.HasSuffix(p, suffix) && files[strings.TrimSuffix(p, suffix)] {
+			return true
+		}
+	}
+	return false
+}
+
+// negotiateEncoding picks the best encoded representation the client accepts.
+// Brotli wins over gzip whenever both are acceptable. Returns (nil, "") if the
+// client accepts neither or no precompressed body is available.
+func negotiateEncoding(r *http.Request, asset encodedAsset) ([]byte, string) {
+	br, gz := acceptsEncoding(r, "br"), acceptsEncoding(r, "gzip")
+	if br && asset.br != nil {
+		return asset.br, "br"
+	}
+	if gz && asset.gz != nil {
+		return asset.gz, "gzip"
+	}
+	return nil, ""
+}
+
+// acceptsEncoding reports whether the client's Accept-Encoding header
+// includes the named coding with non-zero quality.
+func acceptsEncoding(r *http.Request, coding string) bool {
+	for part := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
+		token, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(token, coding) && token != "*" {
+			continue
+		}
+		// Honor "q=0" per RFC 9110.
+		for param := range strings.SplitSeq(params, ";") {
+			k, v, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if ok && strings.EqualFold(k, "q") && strings.TrimSpace(v) == "0" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // assetETags returns a map from URL request path to a strong ETag for each
