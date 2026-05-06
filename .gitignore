@@ -13,6 +13,7 @@
 # JS deps
 /client/node_modules/
 /client/bun.lock
+/client/package-lock.json
 
 # Test + coverage artifacts
 *.test
