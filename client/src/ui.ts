@@ -766,40 +766,46 @@ function startInlineEdit(row: HTMLElement, id: string): void {
   input.select();
 }
 
-// showDeleteConfirmInMenu replaces the menu's items with a Delete? prompt
-// in place. The popover stays where it is, so the user's cursor doesn't
-// have to traverse the row to confirm.
+// showDeleteConfirmInMenu replaces the menu's items with a compact Confirm
+// prompt in place. The popover stays where it is, so the user's cursor
+// doesn't have to traverse the row to confirm.
 function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string): void {
   if (row.classList.contains("deleted")) return;
   menu.classList.add("msg-menu-confirm");
   menu.replaceChildren();
 
-  const label = document.createElement("div");
+  const label = document.createElement("span");
   label.className = "msg-menu-confirm-label";
-  label.textContent = "Delete message?";
-
-  const buttons = document.createElement("div");
-  buttons.className = "msg-menu-confirm-row";
+  label.textContent = "Confirm";
 
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.className = "msg-menu-item";
-  cancel.textContent = "Cancel";
+  cancel.className = "msg-menu-icon-btn";
+  cancel.setAttribute("aria-label", "Cancel");
+  cancel.title = "Cancel";
+  cancel.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </svg>`;
 
   const yes = document.createElement("button");
   yes.type = "button";
-  yes.className = "msg-menu-item msg-menu-item-danger";
-  yes.textContent = "Delete";
+  yes.className = "msg-menu-icon-btn msg-menu-icon-btn-danger";
+  yes.setAttribute("aria-label", "Delete message");
+  yes.title = "Delete";
+  yes.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="5 12 10 17 19 7" />
+    </svg>`;
 
-  buttons.append(cancel, yes);
-  menu.append(label, buttons);
+  menu.append(label, cancel, yes);
 
   cancel.addEventListener("click", (ev) => {
     ev.stopPropagation();
     closeMessageMenu();
   });
-  yes.addEventListener("click", (ev) => {
-    ev.stopPropagation();
+  const submit = () => {
     const ok = chatActionHandlers?.onDelete(id) ?? false;
     if (!ok) {
       // No room or lost authorship — just close the menu; the row stays
@@ -808,6 +814,20 @@ function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string
     }
     // Success path: room fires onChatDeleted → deleteChatMessage replaces
     // the body with a tombstone and closes the menu.
+  };
+  yes.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    submit();
+  });
+  // Enter from anywhere in the popover confirms. The user just opened the
+  // menu and reads the prompt — having to tab to the checkmark first would
+  // be friction. Esc still closes via the document-level handler.
+  menu.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.isComposing) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      submit();
+    }
   });
   yes.focus();
 }

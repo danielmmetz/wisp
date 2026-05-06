@@ -871,34 +871,52 @@ input.name-edit {
   color: #fff;
 }
 
-/* Delete-confirm step shown in place of the menu items so the user can
- * confirm without moving the cursor across the row. */
-.msg-menu.msg-menu-confirm { padding: 8px; gap: 6px; }
+/* Compact Confirm prompt: a small label and two icon buttons in a single
+ * horizontal row, replacing the menu items in place when the user picks
+ * Delete. Keeps the popover small and the targets near the kebab. */
+.msg-menu.msg-menu-confirm {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+}
 .msg-menu-confirm-label {
   font-size: 0.9rem;
   color: var(--fg);
-  padding: 2px 4px 4px;
+  margin-right: 2px;
 }
-.msg-menu-confirm-row {
-  display: flex;
-  gap: 6px;
+.msg-menu-icon-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--rule, rgba(0, 0, 0, 0.18));
+  border-radius: 6px;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
 }
-.msg-menu-confirm-row .msg-menu-item {
-  flex: 1;
-  text-align: center;
-  border: 1px solid var(--rule, rgba(0, 0, 0, 0.15));
-  min-height: 32px;
-  padding: 6px 8px;
+.msg-menu-icon-btn:hover,
+.msg-menu-icon-btn:focus-visible {
+  background: var(--hover, rgba(0, 0, 0, 0.06));
+  color: var(--fg);
+  outline: none;
 }
-.msg-menu-confirm-row .msg-menu-item-danger {
+.msg-menu-icon-btn-danger {
   background: var(--bad, #c53030);
   border-color: var(--bad, #c53030);
   color: #fff;
 }
-.msg-menu-confirm-row .msg-menu-item-danger:hover,
-.msg-menu-confirm-row .msg-menu-item-danger:focus-visible {
+.msg-menu-icon-btn-danger:hover,
+.msg-menu-icon-btn-danger:focus-visible {
   background: var(--bad, #c53030);
-  filter: brightness(1.05);
+  color: #fff;
+  filter: brightness(1.06);
 }
 .msg.system {
   grid-column: 1 / -1;
