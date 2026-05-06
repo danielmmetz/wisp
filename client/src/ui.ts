@@ -1,6 +1,7 @@
 // DOM helpers for the lobby and room screens. Stays vanilla; no framework.
 
 import { attachRemoteStream, observeMicLevel, observeSpeaking, type AudioDevice } from "./audio.ts";
+import { renderMarkdown } from "./markdown.ts";
 import { MAX_NAME_LEN } from "./wire.ts";
 
 export interface PeerRowOptions {
@@ -409,7 +410,7 @@ export function appendChatMessage(opts: {
   who.textContent = opts.name;
   who.classList.add(`who-c${authorColorIndex(opts.from)}`);
   node.querySelector<HTMLElement>(".time")!.textContent = formatTime(opts.ts);
-  node.querySelector<HTMLElement>(".body")!.textContent = opts.body;
+  node.querySelector<HTMLElement>(".body")!.innerHTML = renderMarkdown(opts.body);
   appendChatNode(node);
 }
 

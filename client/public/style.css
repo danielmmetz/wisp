@@ -688,6 +688,45 @@ input.name-edit {
   color: var(--fg);
   white-space: pre-wrap;
 }
+/* Inline markdown styling. Links inherit the accent color so they're
+ * obviously interactive without leaving the existing visual palette. The
+ * code styling is shared between inline `code` and fenced ```code blocks```;
+ * the .code-block modifier upgrades the latter to a multi-line block with
+ * a small inset so it reads as a self-contained snippet within the message
+ * bubble. */
+.msg .head-line .body a {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-word;
+}
+.msg .head-line .body a:hover { text-decoration: none; }
+.msg .head-line .body strong { font-weight: 700; }
+.msg .head-line .body em { font-style: italic; }
+.msg .head-line .body del { color: var(--muted); }
+.msg .head-line .body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--rule-2);
+  border-radius: 3px;
+  padding: 0 0.25em;
+}
+.msg .head-line .body code.code-block {
+  display: block;
+  margin: 0.3em 0;
+  padding: 0.45em 0.6em;
+  background: var(--card-2);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.msg .head-line .body .quote {
+  display: block;
+  margin: 0.25em 0;
+  padding: 0.05em 0.7em;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+}
 .msg .time {
   color: var(--muted);
   font-size: 0.78rem;
@@ -709,7 +748,7 @@ input.name-edit {
 /* compose */
 .chat-compose {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.5rem;
   padding: 0.55rem;
   min-height: var(--footer-row-h);
@@ -717,7 +756,7 @@ input.name-edit {
   background: var(--card);
   flex: 0 0 auto;
 }
-.chat-compose input {
+.chat-compose textarea {
   flex: 1;
   background: var(--card-2);
   border: 1px solid var(--rule);
@@ -725,8 +764,14 @@ input.name-edit {
   color: var(--fg);
   padding: 0.55rem 0.8rem;
   font: inherit;
+  resize: none;
+  /* Row count is driven by JS auto-grow; cap at ~6 lines so a long paste
+   * scrolls in place rather than swallowing the message list. */
+  max-height: 9em;
+  overflow-y: auto;
+  line-height: 1.4;
 }
-.chat-compose input:focus {
+.chat-compose textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: 0;
   border-color: transparent;
@@ -734,6 +779,9 @@ input.name-edit {
 .chat-compose button {
   padding: 0 0.95rem;
   font-weight: 600;
+  /* Match the button's vertical footprint to the resting textarea so the
+   * row stays at --footer-row-h before the textarea has been auto-grown. */
+  height: calc(var(--footer-row-h) - 1.1rem);
 }
 
 /* ============================== Audio settings (gear + popover) ============================== */

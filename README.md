@@ -4,7 +4,7 @@ Browser-based voice chat for small groups. Open the URL, share a code like `velv
 
 Audio is encrypted between peers. Every connection runs WebRTC's built-in DTLS-SRTP; on browsers that support [WebRTC Insertable Streams](https://developer.chrome.com/blog/webrtc-encoded-transform/) (Chrome, Firefox), an additional per-call group key is layered on top, derived client-side and never visible to the signaling server. iOS Safari currently runs on DTLS-SRTP only.
 
-Text chat sits alongside the voice, riding per-peer WebRTC data channels — same trust model, same ephemerality. Joiners don't receive history; the channel is gone when the room is.
+Text chat sits alongside the voice, riding per-peer WebRTC data channels — same trust model, same ephemerality. Messages render a Slack-flavored subset of markdown: `*bold*`, `_italic_`, `~strike~`, `` `code` `` and ` ``` ` blocks, `> quote` (or `>>>` for long quotes), and `[text](url)` links. The composer is multi-line — Enter sends, Shift/Cmd-Enter inserts a newline. Joiners don't receive history; the channel is gone when the room is.
 
 Anyone can share their screen — one presenter at a time, up to 1080p. Pick `Document` (low frame rate, sharper) for PDFs or code, or `Motion` (30 fps) for video and games. System audio rides along where the browser offers it. Mic, screen video, and screen audio each get their own IV tag under the group key so a peer's senders never collide. A signaling drop mid-share keeps the capture alive — peers reconnect, the share resumes.
 

@@ -297,14 +297,14 @@
                 <main class="chat" role="tabpanel" aria-labelledby="tab-chat">
                     <ul id="chat-messages" class="chat-scroll"></ul>
                     <form id="chat-form" class="chat-compose" autocomplete="off">
-                        <input
+                        <textarea
                             id="chat-input"
-                            type="text"
                             maxlength="2000"
                             autocomplete="off"
                             spellcheck="false"
                             aria-label="Message"
-                        />
+                            rows="1"
+                        ></textarea>
                         <button type="submit" class="primary">Send</button>
                     </form>
                 </main>

@@ -629,13 +629,35 @@ function init(): void {
   document.querySelector<HTMLButtonElement>("#share-narrow")
     ?.addEventListener("click", () => void shareRoom());
   initShareSupport();
-  $("#chat-form").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const input = $("#chat-input") as HTMLInputElement;
-    const text = input.value;
-    if (!room || !text.trim()) return;
-    if (room.sendChat(text)) input.value = "";
-  });
+  {
+    const chatInput = $("#chat-input") as HTMLTextAreaElement;
+    // Auto-grow the textarea as the user types. The CSS max-height caps it
+    // so a long paste starts scrolling in place instead of pushing the
+    // message list off-screen.
+    const autosize = (): void => {
+      chatInput.style.height = "auto";
+      chatInput.style.height = `${chatInput.scrollHeight}px`;
+    };
+    chatInput.addEventListener("input", autosize);
+    // Plain Enter sends; Cmd/Ctrl/Shift+Enter inserts a newline (the
+    // default textarea behavior, which we let through by not preventing
+    // the keystroke).
+    chatInput.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" || ev.isComposing) return;
+      if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      ev.preventDefault();
+      ($("#chat-form") as HTMLFormElement).requestSubmit();
+    });
+    $("#chat-form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const text = chatInput.value;
+      if (!room || !text.trim()) return;
+      if (room.sendChat(text)) {
+        chatInput.value = "";
+        autosize();
+      }
+    });
+  }
   $("#brand").addEventListener("click", (ev) => {
     if (!room) return;
     ev.preventDefault();
