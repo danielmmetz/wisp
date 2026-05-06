@@ -51,6 +51,14 @@ import type {
 let room: Room | null = null;
 let mic: MicCapture | null = null;
 const rows = new Map<string, PeerRowHandle>();
+// Latest known peer connection state, keyed by peer id. Drives the
+// diagnostics-trigger health tint when 2+ peers all collapse at once.
+// Cleared on leave/reset. Updated from onConnectionState/onPeerRemoved.
+const peerConnectionStates = new Map<string, RTCPeerConnectionState>();
+// signalingHealth flips to "reconnecting" while we're redialing the WS;
+// recomputeHealth treats that as bad regardless of peer state. Reset by
+// onReconnected/onJoined and on leave.
+let signalingHealth: "ok" | "reconnecting" = "ok";
 let selfBlock: SelfBlockHandle | null = null;
 let qualityTimer: number | null = null;
 let localId: string | null = null;
@@ -140,6 +148,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       localId = id;
       showRoom(code);
       setRoomStatus("Connecting…");
+      signalingHealth = "ok";
+      recomputeHealth();
       diagnostics?.setStuckHint(true);
       selfBlock = bindSelfBlock({
         name,
@@ -184,9 +194,11 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.destroy();
       rows.delete(id);
       remoteStreams.delete(id);
+      peerConnectionStates.delete(id);
       releaseAuthorColor(id);
       refreshPeerCount();
       if (name) appendChatSystem(`${name} left`);
+      recomputeHealth();
     },
     onPeerRenamed: (id, name) => {
       if (id === localId) {
@@ -208,8 +220,12 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       rows.get(id)?.setSpeaking(speaking);
     },
     onConnectionState: (id, state) => {
+      peerConnectionStates.set(id, state);
       const row = rows.get(id);
-      if (!row) return;
+      if (!row) {
+        recomputeHealth();
+        return;
+      }
       switch (state) {
         case "connected":
           setRoomStatus("");
@@ -220,6 +236,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
           row.setQuality("poor");
           break;
       }
+      recomputeHealth();
     },
     onCipherHealth: (id, healthy) => {
       rows.get(id)?.setCipherHealth(healthy);
@@ -272,6 +289,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
     onReconnecting: (attempt) => {
       setRoomStatus(`Reconnecting (attempt ${attempt})…`);
       diagnostics?.setStuckHint(true);
+      signalingHealth = "reconnecting";
+      recomputeHealth();
       // Visually mark all peer rows as poor while the room is in limbo.
       for (const r of rows.values()) r.setQuality("poor");
     },
@@ -280,6 +299,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       // isSelf checks (e.g. presenter recognition) keep working.
       localId = id;
       setRoomStatus("");
+      signalingHealth = "ok";
+      recomputeHealth();
       // Stuck hint stays true until at least one peer reaches connected;
       // onConnectionState clears it.
     },
@@ -287,6 +308,8 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       stopQualityPolling();
       for (const r of rows.values()) r.destroy();
       rows.clear();
+      peerConnectionStates.clear();
+      signalingHealth = "ok";
       remoteStreams.clear();
       clearChat();
       selfBlock?.reset();
@@ -337,6 +360,7 @@ function startQualityPolling(): void {
     }
     selfBlock?.setQuality(selfQualityFromStats(stats));
     room.applyAdaptiveBitrate(stats);
+    recomputeHealth(stats);
   }, 2000);
 }
 function stopQualityPolling(): void {
@@ -379,6 +403,47 @@ function bucket(loss: number | undefined, rtt: number | undefined): "good" | "de
   if (loss >= 0.05 || (rtt !== undefined && rtt > 400)) return "poor";
   if (loss >= 0.02 || (rtt !== undefined && rtt > 200)) return "degraded";
   return "good";
+}
+
+// recomputeHealth feeds the diagnostics-trigger tint. Rules are tuned to
+// "is this actionable for the local user?" rather than "is anyone in the
+// room having a bad time?" — the per-peer rail rows already surface
+// peer-specific issues; the global icon should not cry wolf about
+// problems on the *other* end of the call.
+//
+//   bad  — WS reconnecting (server connection lost), or 2+ peers all
+//          failed/disconnected at once (likely our network)
+//   warn — listeners are losing our audio (selfQuality degraded/poor),
+//          which means our upload is hurting
+//   good — otherwise (single-peer issues, relayed transport, inbound
+//          loss from one peer all stay quiet here)
+function recomputeHealth(stats?: Map<string, PeerStats>): void {
+  if (!diagnostics) return;
+  if (signalingHealth === "reconnecting") {
+    diagnostics.setHealth("bad");
+    return;
+  }
+  if (peerConnectionStates.size >= 2) {
+    let allBroken = true;
+    for (const state of peerConnectionStates.values()) {
+      if (state !== "failed" && state !== "disconnected") {
+        allBroken = false;
+        break;
+      }
+    }
+    if (allBroken) {
+      diagnostics.setHealth("bad");
+      return;
+    }
+  }
+  if (stats && stats.size > 0) {
+    const sq = selfQualityFromStats(stats);
+    if (sq === "poor" || sq === "degraded") {
+      diagnostics.setHealth("warn");
+      return;
+    }
+  }
+  diagnostics.setHealth("good");
 }
 
 function readNameFromLobby(): string {

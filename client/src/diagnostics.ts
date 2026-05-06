@@ -24,6 +24,14 @@ export interface DiagnosticsController {
   //  - auto-open at 10s (unless the user dismissed it this session)
   // Calling with the same value repeatedly is a no-op.
   setStuckHint: (stuck: boolean) => void;
+  // setHealth tints the trigger to reflect overall connection health.
+  //   good: at rest (muted)
+  //   warn: amber (relayed transport, degraded/poor audio quality)
+  //   bad:  red (peer failed/disconnected, ws closed/reconnecting)
+  // Independent of the stuck-hint pulse — the .attention class still wins
+  // when both are active so a "stuck" room reads as the same amber signal
+  // regardless of which underlying problem caused it.
+  setHealth: (level: "good" | "warn" | "bad") => void;
   // reset clears the dismissed flag and stuck timer. Called on leave so a
   // future room starts with a clean slate.
   reset: () => void;
@@ -52,6 +60,7 @@ export function bindDiagnostics(handlers: DiagnosticsHandlers): DiagnosticsContr
       open: () => {},
       close: () => {},
       setStuckHint: () => {},
+      setHealth: () => {},
       reset: () => {},
     };
   }
@@ -137,8 +146,16 @@ export function bindDiagnostics(handlers: DiagnosticsHandlers): DiagnosticsContr
     }, AUTO_OPEN_MS);
   };
 
+  const setHealth = (level: "good" | "warn" | "bad"): void => {
+    for (const t of triggers) {
+      t.classList.toggle("health-warn", level === "warn");
+      t.classList.toggle("health-bad", level === "bad");
+    }
+  };
+
   const reset = (): void => {
     setStuckHint(false);
+    setHealth("good");
     userDismissed = false;
     lastSnapshot = null;
     close();
@@ -183,7 +200,7 @@ export function bindDiagnostics(handlers: DiagnosticsHandlers): DiagnosticsContr
     // Keep the panel open so the user sees state change in real time.
   });
 
-  return { open, close, setStuckHint, reset };
+  return { open, close, setStuckHint, setHealth, reset };
 }
 
 // renderInto rewrites the panel body in place. Cheap to call every second
@@ -301,6 +318,18 @@ function peerCard(p: Diagnostics["peers"][number]): HTMLElement {
   appendDt(dl, "Candidates", candidatesSummary(p));
   if (typeof p.rttMs === "number") {
     appendDt(dl, "RTT", `${Math.round(p.rttMs)} ms`);
+  }
+  // Outbound: what the remote reports back about audio we sent them.
+  // Drives the warn-tint case "listeners are losing your audio."
+  const outboundParts: string[] = [];
+  if (typeof p.outboundRttMs === "number") {
+    outboundParts.push(`${Math.round(p.outboundRttMs)} ms RTT`);
+  }
+  if (typeof p.outboundLossPct === "number") {
+    outboundParts.push(`${(p.outboundLossPct * 100).toFixed(1)}% loss`);
+  }
+  if (outboundParts.length > 0) {
+    appendDt(dl, "Outbound", outboundParts.join(" · "));
   }
   card.appendChild(dl);
   return card;
@@ -455,6 +484,30 @@ function tipFor(snap: Diagnostics): HTMLElement[] {
           "warn",
           "⚠",
           `<strong>Stuck connecting to ${escapeHtml(p.name || "this peer")}.</strong> No relay candidate is available — TURN may be blocked on one side. Try switching network or disabling VPN, then click Reconnect.`,
+        ),
+      ];
+    }
+  }
+
+  // Outbound loss: listeners are losing some of the audio we send. Could
+  // be our upload — actionable for the local user (move closer to wifi,
+  // switch network). Threshold matches qualityFromStats's "degraded".
+  if (snap.peers.length > 0) {
+    let worstOutbound: number | undefined;
+    let worstPeer = "";
+    for (const p of snap.peers) {
+      if (typeof p.outboundLossPct === "number" && (worstOutbound === undefined || p.outboundLossPct > worstOutbound)) {
+        worstOutbound = p.outboundLossPct;
+        worstPeer = p.name || "your listener";
+      }
+    }
+    if (worstOutbound !== undefined && worstOutbound >= 0.02) {
+      const pct = (worstOutbound * 100).toFixed(1);
+      return [
+        tip(
+          "warn",
+          "⚠",
+          `<strong>${escapeHtml(worstPeer)} is losing ${pct}% of the audio you send.</strong> You may be on a weak connection — try moving closer to your wifi or switching networks.`,
         ),
       ];
     }

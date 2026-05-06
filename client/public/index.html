@@ -29,7 +29,6 @@
                 </a>
                 <p class="tagline">privacy conscious chat</p>
                 <code id="room-code-narrow" class="code-narrow"></code>
-                <span id="room-status-narrow" class="status-narrow"></span>
                 <button
                     id="diag-trigger-narrow"
                     class="diag-trigger header-action"
@@ -39,7 +38,13 @@
                     aria-haspopup="dialog"
                     aria-expanded="false"
                     aria-controls="diag-dialog"
-                >?</button>
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                    </svg>
+                </button>
+                <span id="diag-sep-narrow" class="diag-sep" aria-hidden="true"></span>
+                <span id="room-status-narrow" class="status-narrow"></span>
             </div>
             <div class="site-header-actions">
                 <button
@@ -199,7 +204,6 @@
                         <div class="rail-head-id">
                             <code id="room-code" class="code"></code>
                             <div class="rail-head-meta">
-                                <span id="room-status" class="meta"></span>
                                 <button
                                     id="diag-trigger"
                                     class="diag-trigger"
@@ -209,7 +213,13 @@
                                     aria-haspopup="dialog"
                                     aria-expanded="false"
                                     aria-controls="diag-dialog"
-                                >?</button>
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                                    </svg>
+                                </button>
+                                <span class="diag-sep" aria-hidden="true"></span>
+                                <span id="room-status" class="meta"></span>
                             </div>
                         </div>
                         <button

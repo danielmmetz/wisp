@@ -1343,35 +1343,45 @@ body.presenter-open .presenter-indicator-name {
  * #room-status-narrow (in the site-header on narrow). It's a tiny "?" pip
  * that pulses warn-coloured when the room has been stuck >10s, but is
  * otherwise quiet — the panel is an opt-in, not a notification. */
+/* Wrap [trigger | meta] so they ride the same line. The activity icon
+ * sits left, then a thin vertical separator, then the status/peer-count
+ * text. flex: 0 1 auto on the meta keeps the row hugging its content. */
 .rail-head-meta {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
 }
-.rail-head-meta .meta { display: inline-block; flex: 1; min-width: 0; }
+.rail-head-meta .meta { display: inline-block; flex: 0 1 auto; min-width: 0; }
+.diag-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 0.85em;
+  background: var(--rule);
+}
 .diag-trigger {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.05rem;
-  height: 1.05rem;
-  padding: 0;
-  border-radius: 999px;
-  border: 1px solid var(--rule);
-  background: var(--card);
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.7rem;
-  font-weight: 600;
-  line-height: 1;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-2);
   cursor: pointer;
+  border-radius: 6px;
+  line-height: 0;
 }
-.diag-trigger:hover { color: var(--accent); border-color: var(--accent); }
+.diag-trigger svg { display: block; }
+.diag-trigger:hover { color: var(--accent); background: var(--rule-2); }
+/* Health tint: solid colour reflects the worst observed state across
+ * all peers (bad takes priority over warn over good). The .attention
+ * rule below comes later in source order so a stuck-hint pulse always
+ * reads as the same amber signal regardless of underlying tint. */
+.diag-trigger.health-warn { color: var(--warn); }
+.diag-trigger.health-bad  { color: var(--bad); }
 .diag-trigger.attention {
   color: var(--warn);
-  border-color: var(--warn);
   animation: diag-pulse 1.6s ease-in-out infinite;
 }
 @keyframes diag-pulse {
@@ -1389,9 +1399,11 @@ body.presenter-open .presenter-indicator-name {
  * next to #room-status-narrow, but that section isn't gated by the
  * existing .header-action rule (which is scoped to .site-header-actions),
  * so we gate it explicitly here. */
-#diag-trigger-narrow { display: none; }
+#diag-trigger-narrow,
+#diag-sep-narrow { display: none; }
 @media (max-width: 599px) {
   body.in-room #diag-trigger-narrow { display: inline-flex; vertical-align: middle; }
+  body.in-room #diag-sep-narrow { display: inline-block; vertical-align: middle; }
 }
 
 /* ---- diagnostics dialog ---- */

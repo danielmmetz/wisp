@@ -57,6 +57,13 @@ export interface PeerDiagnostics {
   localCandidateTypes: string[];
   remoteCandidateTypes: string[];
   rttMs?: number;
+  // outboundRttMs: round-trip the remote reports back via RTCP RR.
+  outboundRttMs?: number;
+  // outboundLossPct: lifetime fraction of audio we sent that the remote
+  // never received (0..1). Undefined until at least one RR has arrived.
+  // Lifetime rather than windowed so the panel reads stably across 1s
+  // refreshes; the tint uses Peer.stats() (windowed) instead.
+  outboundLossPct?: number;
   ageMs: number;
 }
 
@@ -668,6 +675,10 @@ export class Peer {
     let selectedLocalType: string | null = null;
     let selectedRemoteType: string | null = null;
     let rttMs: number | undefined;
+    let outRtt: number | undefined;
+    let outSent = 0;
+    let outLost = 0;
+    let outRRSeen = false;
     let transport: PeerTransport | "unknown" = "unknown";
     try {
       const stats = await this.pc.getStats();
@@ -686,11 +697,19 @@ export class Peer {
           selectedRemoteType = (remote?.candidateType as string | undefined) ?? null;
           const relayed = local?.candidateType === "relay" || remote?.candidateType === "relay";
           transport = relayed ? "relayed" : "direct";
+        } else if (rep.type === "outbound-rtp" && rep.kind === "audio") {
+          if (typeof rep.packetsSent === "number") outSent = rep.packetsSent;
+        } else if (rep.type === "remote-inbound-rtp" && rep.kind === "audio") {
+          outRRSeen = true;
+          if (typeof rep.packetsLost === "number") outLost = rep.packetsLost;
+          if (typeof rep.roundTripTime === "number") outRtt = rep.roundTripTime * 1000;
         }
       });
     } catch (err) {
       console.warn("diagnostics getStats failed", err);
     }
+    const outTotal = outSent + outLost;
+    const outboundLossPct = outRRSeen && outTotal > 0 ? outLost / outTotal : undefined;
     return {
       id: this.remoteId,
       isOfferer: this.local.isOfferer,
@@ -705,6 +724,8 @@ export class Peer {
       localCandidateTypes: [...localTypes].sort(),
       remoteCandidateTypes: [...remoteTypes].sort(),
       rttMs,
+      outboundRttMs: outRtt,
+      outboundLossPct,
       ageMs: Date.now() - this.createdAt,
     };
   }
