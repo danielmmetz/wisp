@@ -557,9 +557,52 @@ input.name-edit {
   color: var(--muted);
   font-size: 0.78rem;
   white-space: nowrap;
+  position: relative;
+  cursor: help;
 }
 .rail-self .qmeta.degraded { color: var(--warn); }
 .rail-self .qmeta.poor { color: var(--bad); }
+
+/* Immediate hover tooltip on the self quality badge — replaces the
+ * delayed native title="" tooltip. Renders above since the badge sits
+ * in the page footer. */
+.qmeta[data-tip]::after,
+.qmeta[data-tip]::before {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms ease-out;
+  z-index: 60;
+}
+.qmeta[data-tip]::after {
+  content: attr(data-tip);
+  bottom: calc(100% + 8px);
+  left: 0;
+  background: var(--fg);
+  color: var(--bg);
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  width: max-content;
+  max-width: 220px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.qmeta[data-tip]::before {
+  content: "";
+  bottom: calc(100% + 3px);
+  left: 0.55rem;
+  border: 5px solid transparent;
+  border-top-color: var(--fg);
+}
+.qmeta[data-tip]:hover::after,
+.qmeta[data-tip]:hover::before,
+.qmeta[data-tip]:focus-visible::after,
+.qmeta[data-tip]:focus-visible::before {
+  opacity: 1;
+}
 
 .rail-self .ctrls {
   display: flex;
