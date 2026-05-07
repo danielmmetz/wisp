@@ -102,6 +102,28 @@ function savePrefs(): void {
 }
 const prefs = loadPrefs();
 
+// Last display name the user explicitly chose. Prefilled into the lobby
+// name field on load, and into the in-room rename input. Updated when the
+// user submits the lobby with a non-empty name or renames in-room — never
+// from server-assigned animal-name fallbacks.
+const NAME_STORAGE_KEY = "wisp.displayName";
+function loadStoredName(): string {
+  try {
+    return localStorage.getItem(NAME_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+function saveStoredName(name: string): void {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    localStorage.setItem(NAME_STORAGE_KEY, trimmed);
+  } catch {
+    /* no-op; private mode etc. */
+  }
+}
+
 let levelMeter: MicLevelMeter | null = null;
 
 async function ensureMic(): Promise<MicCapture> {
@@ -173,6 +195,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
         name,
         onMuteToggle: (m) => mic?.setMuted(m),
         onRenameRequest: (next) => {
+          saveStoredName(next);
           room?.rename(next);
         },
         onLeaveRequest: () => leaveRoom(),
@@ -197,6 +220,7 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
             for (const t of stream.getAudioTracks()) t.enabled = !m;
           }
         },
+        onKickRequest: () => room?.kick(id),
       });
       row.setQuality("unknown");
       rows.set(id, row);
@@ -208,14 +232,21 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       // localId set, so they do produce "X joined".
       if (localId) appendChatSystem(`${name} joined`);
     },
-    onPeerRemoved: (id, name) => {
+    onPeerRemoved: (id, name, reason) => {
       rows.get(id)?.destroy();
       rows.delete(id);
       remoteStreams.delete(id);
       peerConnectionStates.delete(id);
       releaseAuthorColor(id);
       refreshPeerCount();
-      if (name) appendChatSystem(`${name} left`);
+      if (name) {
+        if (reason.kind === "kicked") {
+          const by = reason.byName || "someone";
+          appendChatSystem(`${by} removed ${name}`);
+        } else {
+          appendChatSystem(`${name} left`);
+        }
+      }
       recomputeHealth();
     },
     onPeerRenamed: (id, name) => {
@@ -344,7 +375,16 @@ function buildRoomCallbacks(): ConstructorParameters<typeof Room>[1] {
       screenShareBtn?.setVisible(false);
       releaseMic();
       showLobby();
-      setLobbyError(reason === "user left" ? null : `Disconnected: ${reason}`);
+      if (reason === "user left") {
+        setLobbyError(null);
+      } else if (reason.startsWith("kicked by ")) {
+        const by = reason.slice("kicked by ".length);
+        setLobbyError(`Removed from the room by ${by}.`);
+      } else if (reason === "kicked from the room") {
+        setLobbyError("Removed from the room.");
+      } else {
+        setLobbyError(`Disconnected: ${reason}`);
+      }
       room = null;
     },
     onError: (msg) => {
@@ -466,6 +506,7 @@ function recomputeHealth(stats?: Map<string, PeerStats>): void {
 
 function readNameFromLobby(): string {
   const raw = (($("#name-input") as HTMLInputElement).value ?? "").trim();
+  if (raw) saveStoredName(raw);
   return raw;
 }
 
@@ -759,6 +800,13 @@ function init(): void {
     getSnapshot: () => room?.diagnostics() ?? null,
     kickReconnect: () => room?.kickReconnect(),
   });
+
+  // Prefill the lobby name field from localStorage so a returning user
+  // doesn't have to retype. Empty stored value falls through to the server's
+  // animal-name fallback. The user can still edit before joining; submitting
+  // the form with a non-empty name overwrites the stored value.
+  const storedName = loadStoredName();
+  if (storedName) ($("#name-input") as HTMLInputElement).value = storedName;
 
   // Empty name is sent verbatim; the server picks a random animal name as
   // the fallback. The user can edit before joining, or rename in-room.

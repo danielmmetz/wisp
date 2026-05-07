@@ -99,10 +99,16 @@ export interface ChatMessage {
   ts: number;
 }
 
+// PeerRemovedReason explains why a peer left. "left" covers a clean
+// departure (the peer hit Leave or their connection dropped); "kicked"
+// covers a removal initiated by another peer in the room and carries the
+// kicker's name for system-line rendering.
+export type PeerRemovedReason = { kind: "left" } | { kind: "kicked"; byName: string };
+
 export interface RoomCallbacks {
   onJoined: (info: { code: string; localId: string; name: string }) => void;
   onPeerAdded: (id: string, name: string) => void;
-  onPeerRemoved: (id: string, name: string) => void;
+  onPeerRemoved: (id: string, name: string, reason: PeerRemovedReason) => void;
   onPeerRenamed: (id: string, name: string) => void;
   onRemoteStream: (id: string, stream: MediaStream) => void;
   onSpeakingChange: (id: string, speaking: boolean) => void;
@@ -183,6 +189,11 @@ export class Room {
   private intent: JoinIntent | null = null;
   private leaving = false;
   private reconnecting = false;
+  // kicked latches when the local peer was removed by another peer. The
+  // ensuing socket close must not trigger an auto-reconnect — kick is a
+  // soft boot, but it's still the kicker's expressed intent that we leave.
+  // The user can rejoin manually from the lobby.
+  private kicked = false;
   // Screen-share state. capture is non-null while we're the presenter;
   // presenterId is whoever the room currently considers the presenter
   // (local, remote, or null). The advisory `screen` signal resolves which
@@ -232,6 +243,19 @@ export class Room {
       this.signaling.send({ type: "rename", payload: { name } });
     } catch (err) {
       console.warn("rename send failed", err);
+    }
+  }
+
+  // kick asks the server to remove the named peer from the room. The server
+  // broadcasts peer_kicked to all members (including the target) and then
+  // closes the target's connection. Silent if the room isn't active or the
+  // peer isn't known locally — the server enforces membership too.
+  kick(peerId: string): void {
+    if (!peerId || peerId === this.localId) return;
+    try {
+      this.signaling.send({ type: "kick", payload: { peerId } });
+    } catch (err) {
+      console.warn("kick send failed", err);
     }
   }
 
@@ -306,6 +330,9 @@ export class Room {
 
   private onSignalingClosed(): void {
     if (this.leaving) return;
+    // peer_kicked already drove a clean teardown above; the close that
+    // follows is the server cutting our socket. Don't try to reconnect.
+    if (this.kicked) return;
     if (this.localId === null) {
       // Closed before we ever joined — treat as a hard failure; nothing to
       // recover from yet.
@@ -417,6 +444,7 @@ export class Room {
     this.code = null;
     this.intent = null;
     this.reconnecting = false;
+    this.kicked = false;
     this.turnCreds = null;
     this.turnReceivedAt = null;
     this.intentStartedAt = null;
@@ -528,7 +556,7 @@ export class Room {
           // author can edit, and they're gone.
           for (const [id, author] of this.chatAuthors)
             if (author === peerId) this.chatAuthors.delete(id);
-          this.cb.onPeerRemoved(peerId, name);
+          this.cb.onPeerRemoved(peerId, name, { kind: "left" });
           playLeaveTone();
         }
         if (this.presenterId === peerId) {
@@ -545,6 +573,40 @@ export class Room {
         if (peerId === this.localId) this.localName = name;
         this.names.set(peerId, name);
         this.cb.onPeerRenamed(peerId, name);
+        return;
+      }
+      case "peer_kicked": {
+        const { peerId, by } = env.payload;
+        const byName = this.names.get(by) ?? "";
+        if (peerId === this.localId) {
+          // We're the one being kicked. Latch the flag so the imminent
+          // socket close doesn't trigger an auto-reconnect, then tear
+          // down with a reason the lobby can render. The intent string
+          // is matched in main.ts to format "Removed from the room by …".
+          this.kicked = true;
+          const reason = byName ? `kicked by ${byName}` : "kicked from the room";
+          this.teardown(reason);
+          return;
+        }
+        const p = this.peers.get(peerId);
+        if (p) {
+          p.close();
+          this.peers.delete(peerId);
+          this.iceRetried.delete(peerId);
+          const name = this.names.get(peerId) ?? "";
+          this.names.delete(peerId);
+          for (const [id, author] of this.chatAuthors)
+            if (author === peerId) this.chatAuthors.delete(id);
+          this.cb.onPeerRemoved(peerId, name, { kind: "kicked", byName });
+          playLeaveTone();
+        }
+        if (this.presenterId === peerId) {
+          this.presenterId = null;
+          this.remoteScreens.delete(peerId);
+          this.cb.onPresenterChanged(null, null);
+        } else {
+          this.remoteScreens.delete(peerId);
+        }
         return;
       }
       case "signal": {

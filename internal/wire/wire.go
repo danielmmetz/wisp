@@ -40,6 +40,7 @@ const (
 	TypeJoinRoom   = "join_room"
 	TypeLeaveRoom  = "leave_room"
 	TypeRename     = "rename"
+	TypeKick       = "kick"
 	TypeSignal     = "signal"
 
 	// Server → client.
@@ -48,6 +49,7 @@ const (
 	TypePeerJoined  = "peer_joined"
 	TypePeerLeft    = "peer_left"
 	TypePeerRenamed = "peer_renamed"
+	TypePeerKicked  = "peer_kicked"
 	TypeError       = "error"
 )
 
@@ -103,6 +105,13 @@ type RenamePayload struct {
 	Name string `json:"name"`
 }
 
+// KickPayload removes the named peer from the same room as the sender. Any
+// peer in the room may kick any other peer; there is no role gate. The
+// kicked peer is free to rejoin if they still have the code.
+type KickPayload struct {
+	PeerID string `json:"peerId"`
+}
+
 type SignalPayload struct {
 	// To is the destination peer ID within the room.
 	To string `json:"to"`
@@ -151,6 +160,16 @@ type PeerLeftPayload struct {
 type PeerRenamedPayload struct {
 	PeerID string `json:"peerId"`
 	Name   string `json:"name"`
+}
+
+// PeerKickedPayload announces that PeerID was kicked from the room by By.
+// Sent to every peer in the room (including the kicked peer, who receives
+// it before their connection closes) so all clients can render a uniform
+// "X kicked Y" system line. Replaces the peer_left broadcast for the
+// kicked peer — the server sends one or the other, never both.
+type PeerKickedPayload struct {
+	PeerID string `json:"peerId"`
+	By     string `json:"by"`
 }
 
 // SignalForwardedPayload is the server-side rewrite of SignalPayload: To

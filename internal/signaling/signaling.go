@@ -121,12 +121,18 @@ type room struct {
 //
 // name is mutated only under Server.mu; readers (broadcast snapshot, peer
 // list for joiners) also hold the lock so they observe a consistent value.
+//
+// kicked marks a peer whose conn is being torn down because another peer
+// called kick. It's set under Server.mu before closing the conn so the
+// removePeer broadcast suppresses peer_left for them — peer_kicked has
+// already gone out as the canonical removal event.
 type peerConn struct {
 	id           string
 	publicKey    string
 	supportsE2EE bool
 	name         string
 	conn         *websocket.Conn
+	kicked       bool
 }
 
 // HandleHealthz reports liveness for Fly's health checks.
@@ -326,6 +332,8 @@ func (s *Server) runPeer(ctx context.Context, logger *slog.Logger, rm *room, pc 
 			s.handleSignal(ctx, logger, rm, pc, env.Payload)
 		case wire.TypeRename:
 			s.handleRename(ctx, logger, rm, pc, env.Payload)
+		case wire.TypeKick:
+			s.handleKick(ctx, logger, rm, pc, env.Payload)
 		case wire.TypeLeaveRoom:
 			logger.DebugContext(ctx, "peer leave_room")
 			return
@@ -366,6 +374,56 @@ func (s *Server) handleRename(ctx context.Context, logger *slog.Logger, rm *room
 	for _, p := range targets {
 		_ = writeJSON(ctx, p.conn, out)
 	}
+}
+
+// handleKick removes the named peer from rm. Any peer in the room may kick
+// any other peer; the room is the trust boundary, so we don't gate on roles.
+// The target's conn is closed so its read loop tears down naturally; before
+// closing we mark the peer kicked and broadcast peer_kicked to every member
+// (including the target). removePeer skips its peer_left broadcast for
+// kicked peers so clients see a single removal event with kicker context.
+func (s *Server) handleKick(ctx context.Context, logger *slog.Logger, rm *room, from *peerConn, raw json.RawMessage) {
+	var p wire.KickPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		writeError(ctx, from.conn, wire.ErrBadRequest, "invalid kick payload")
+		return
+	}
+	if p.PeerID == "" || p.PeerID == from.id {
+		writeError(ctx, from.conn, wire.ErrBadRequest, "kick.peerId invalid")
+		return
+	}
+
+	// Snapshot recipients and mark target kicked under the lock so a
+	// concurrent leave/kick can't race the conn close.
+	s.mu.Lock()
+	target, ok := rm.peers[p.PeerID]
+	if !ok {
+		s.mu.Unlock()
+		writeError(ctx, from.conn, wire.ErrPeerNotFound, "target peer not in room")
+		return
+	}
+	if target.kicked {
+		// Another kicker already raced ahead; don't double-broadcast.
+		s.mu.Unlock()
+		return
+	}
+	target.kicked = true
+	targets := make([]*peerConn, 0, len(rm.peers))
+	for _, pp := range rm.peers {
+		targets = append(targets, pp)
+	}
+	s.mu.Unlock()
+
+	logger.InfoContext(ctx, "peer kicked",
+		slog.String("target", target.id), slog.String("by", from.id))
+	out := envelope(wire.TypePeerKicked, wire.PeerKickedPayload{PeerID: target.id, By: from.id})
+	for _, pp := range targets {
+		_ = writeJSON(ctx, pp.conn, out)
+	}
+	// Closing the conn unblocks the target's Read in runPeer, which then
+	// flows through removePeer for cleanup. removePeer notices kicked=true
+	// and skips its peer_left broadcast.
+	_ = target.conn.Close(websocket.StatusPolicyViolation, "kicked")
 }
 
 func (s *Server) handleSignal(ctx context.Context, logger *slog.Logger, rm *room, from *peerConn, raw json.RawMessage) {
@@ -482,7 +540,8 @@ func (s *Server) peerInRoom(rm *room, id string) *peerConn {
 }
 
 // removePeer drops pc from rm and broadcasts peer_left to remaining peers.
-// Idempotent; safe to defer.
+// Idempotent; safe to defer. For kicked peers, peer_left is suppressed —
+// handleKick already broadcast peer_kicked as the canonical removal event.
 func (s *Server) removePeer(rm *room, pc *peerConn, logger *slog.Logger) {
 	s.mu.Lock()
 	if _, present := rm.peers[pc.id]; !present {
@@ -499,12 +558,15 @@ func (s *Server) removePeer(rm *room, pc *peerConn, logger *slog.Logger) {
 		delete(s.rooms, rm.code.String())
 		s.cooldowns[rm.code.String()] = s.now().Add(s.codeCooldown)
 	}
+	wasKicked := pc.kicked
 	s.mu.Unlock()
 
 	logger.InfoContext(context.Background(), "peer removed",
-		slog.Int("remaining", len(remaining)), slog.Bool("room_closed", roomEmpty))
+		slog.Int("remaining", len(remaining)),
+		slog.Bool("room_closed", roomEmpty),
+		slog.Bool("kicked", wasKicked))
 
-	if !roomEmpty {
+	if !roomEmpty && !wasKicked {
 		out := envelope(wire.TypePeerLeft, wire.PeerLeftPayload{PeerID: pc.id})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

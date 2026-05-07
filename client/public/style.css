@@ -400,6 +400,10 @@ button.ghost:hover { color: var(--fg); }
 
 .peer {
   display: grid;
+  /* Desktop: 4 columns. peer-extra is absolute on hover (rail is only
+   * 13rem wide; reserving a column collapses the 1fr name to 0). The
+   * touch breakpoint below switches to a 5-column layout where peer-extra
+   * lives in the grid because mobile rows have room for everyone. */
   grid-template-columns: 8px 1fr auto auto;
   align-items: center;
   gap: 0.55rem;
@@ -457,36 +461,55 @@ button.ghost:hover { color: var(--fg); }
 .peer .cipher.bad { color: var(--bad); }
 .peer .cipher:empty { display: none; }
 
-/* hover-reveal vol + mute on remote peer rows. Slides in from the right
- * over the trailing badges so the row layout doesn't reflow. */
+/* Desktop hover-reveal: peer-extra is an absolute overlay sized to the row
+ * exactly — full row height, solid var(--rule-2) background matching the
+ * row's :hover background. The two coalesce into one visually uniform
+ * region so there is no "different-shape box" artifact. The trailing
+ * badges underneath are simply covered by the solid block (no need for
+ * separate visibility tricks). The name behind it is also covered, which
+ * is the unavoidable trade-off on a 13rem rail; the left portion of the
+ * name remains visible. */
 .peer .peer-extra {
   display: flex;
   gap: 0.5rem;
   align-items: center;
   position: absolute;
-  right: 0.6rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: linear-gradient(to right, transparent, var(--rule-2) 18%);
-  padding-left: 1.5rem;
+  inset: 0 0 0 auto;
+  padding: 0 0.85rem 0 0.75rem;
+  background: var(--rule-2);
   opacity: 0;
   transition: opacity 100ms ease;
   pointer-events: none;
 }
 .peer:hover .peer-extra,
-.peer:focus-within .peer-extra {
+.peer:focus-within .peer-extra,
+.peer .peer-extra:has(.kick[aria-expanded="true"]) {
   opacity: 1;
   pointer-events: auto;
 }
+/* When the kick popover is open without an active hover (e.g. user moved
+ * cursor down to the checkmark), tint the row to match peer-extra so the
+ * background of the overlay still merges seamlessly with the row. */
+.peer:has(.kick[aria-expanded="true"]) {
+  background: var(--rule-2);
+}
+
+/* Touch / no-hover: the rail expands to viewport width, so we have room
+ * to give peer-extra its own grid column and skip the overlay dance.
+ * Badges sit to its left, no overlap, and no row-hover semantics to
+ * borrow because touch has none. */
 @media (hover: none) {
+  .peer { grid-template-columns: 8px 1fr auto auto auto; }
   .peer .peer-extra {
+    position: static;
+    inset: auto;
+    padding: 0;
+    background: transparent;
     opacity: 1;
     pointer-events: auto;
-    background: transparent;
-    padding-left: 0.4rem;
   }
 }
-.peer .peer-extra .vol { width: 5rem; }
+.peer .peer-extra .vol { width: 3.5rem; }
 
 /* ---- self block (rail bottom) ----
  * Single-row layout: name + quality on the left, mic + leave on the right.
@@ -651,6 +674,13 @@ input.name-edit {
 .peer.is-muted .mute .icon-mic-slash { display: block; }
 .peer.is-muted .mute,
 .peer.is-muted .mute:hover { color: var(--bad); }
+
+/* Destructive sibling of mute. Calm at rest (matches mute's visual weight)
+ * and tints red on hover/focus so the heavier intent is obvious without
+ * shouting at the user before they reach for it. */
+.peer .kick { color: var(--muted); }
+.peer .kick:hover,
+.peer .kick:focus-visible { color: var(--bad); background: var(--rule-2); }
 
 /* ============================== Chat ============================== */
 .chat {

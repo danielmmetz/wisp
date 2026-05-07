@@ -7,6 +7,7 @@ export type ServerEnvelope =
   | { type: "peer_joined"; payload: PeerJoined }
   | { type: "peer_left"; payload: PeerLeft }
   | { type: "peer_renamed"; payload: PeerRenamed }
+  | { type: "peer_kicked"; payload: PeerKicked }
   | { type: "signal"; payload: SignalForwarded }
   | { type: "error"; payload: ErrorPayload };
 
@@ -15,6 +16,7 @@ export type ClientEnvelope =
   | { type: "join_room"; payload: { code: string; publicKey: string; supportsE2EE: boolean; name: string } }
   | { type: "leave_room"; payload: Record<string, never> }
   | { type: "rename"; payload: { name: string } }
+  | { type: "kick"; payload: { peerId: string } }
   | { type: "signal"; payload: { to: string; data: SignalData } };
 
 export interface PeerInfo {
@@ -60,6 +62,14 @@ export interface PeerLeft {
 export interface PeerRenamed {
   peerId: string;
   name: string;
+}
+
+export interface PeerKicked {
+  peerId: string;
+  // by is the kicker's peer ID. Sent to every peer in the room (including
+  // the kicked peer) so all clients can render a uniform "X kicked Y"
+  // system line. Replaces peer_left for the kicked peer.
+  by: string;
 }
 
 export const MAX_NAME_LEN = 32;

@@ -10,6 +10,9 @@ export interface PeerRowOptions {
   // onMuteToggle fires with the new muted state when the user clicks the
   // mute button. Mutes playback of this peer's audio locally.
   onMuteToggle: (muted: boolean) => void;
+  // onKickRequest fires after the user confirms removing this peer. The
+  // confirm prompt lives inside the row; consumers just dispatch the kick.
+  onKickRequest: () => void;
 }
 
 export interface PeerRowHandle {
@@ -165,6 +168,7 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
   const cipherEl = node.querySelector<HTMLElement>(".cipher")!;
   const volEl = node.querySelector<HTMLInputElement>(".vol")!;
   const muteBtn = node.querySelector<HTMLButtonElement>(".mute")!;
+  const kickBtn = node.querySelector<HTMLButtonElement>(".kick")!;
 
   nameEl.textContent = opts.name;
 
@@ -242,6 +246,18 @@ export function makePeerRow(opts: PeerRowOptions): PeerRowHandle {
   });
   volEl.addEventListener("input", () => {
     setVolumeFn?.(Number(volEl.value) / 100);
+  });
+  // Kick is consequential and discoverable (destructive icon next to mute),
+  // so a single confirm step is enough — the kicked peer can rejoin if they
+  // still have the code, and every kick is broadcast as a system line so
+  // accidents are visible in chat. The popover mirrors the chat-delete
+  // confirm: red checkmark anchored under the kick button. Click again to
+  // toggle closed; outside-click / Esc handled by bindChatMessageActions.
+  // stopPropagation prevents the document-level outside-click handler from
+  // immediately closing the popover this very click just opened.
+  kickBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    openKickConfirm(kickBtn, () => opts.onKickRequest());
   });
 
   void currentQuality;
@@ -483,13 +499,17 @@ function ensureEditedTag(node: HTMLElement): void {
 }
 
 // Single live popover and its anchor. We only ever show one menu at a time,
-// so a module-level handle is simpler than per-row state.
+// so a module-level handle is simpler than per-row state. openMenuAnchor is
+// the button that summoned the popover (kebab for chat-message menus, kick
+// button for the kick-confirm popover); we keep it so closeMessageMenu can
+// reset its aria-expanded regardless of which feature opened the popover.
 interface ChatActionHandlers {
   onDelete: (id: string) => boolean;
 }
 let chatActionHandlers: ChatActionHandlers | null = null;
 let openMenuRow: HTMLElement | null = null;
 let openMenuEl: HTMLElement | null = null;
+let openMenuAnchor: HTMLElement | null = null;
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_TOLERANCE_PX = 8;
 
@@ -605,6 +625,7 @@ function openMessageMenu(row: HTMLElement): void {
   openMenuEl = menu;
   openMenuRow = row;
   const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
+  openMenuAnchor = btn ?? null;
   btn?.setAttribute("aria-expanded", "true");
 
   // For the regular menu, align the right edge with the kebab so it
@@ -683,10 +704,11 @@ function positionMenuRelativeTo(
 function closeMessageMenu(): void {
   openMenuEl?.remove();
   openMenuEl = null;
-  if (openMenuRow) {
-    openMenuRow.querySelector<HTMLButtonElement>(".msg-menu-btn")?.setAttribute("aria-expanded", "false");
-    openMenuRow = null;
+  if (openMenuAnchor) {
+    openMenuAnchor.setAttribute("aria-expanded", "false");
+    openMenuAnchor = null;
   }
+  openMenuRow = null;
 }
 
 // ---- Composer (send + edit) ------------------------------------------------
@@ -854,6 +876,58 @@ function showDeleteConfirmInMenu(menu: HTMLElement, row: HTMLElement, id: string
   // so center it on the kebab to put the checkmark directly below it.
   const btn = row.querySelector<HTMLButtonElement>(".msg-menu-btn");
   if (btn) positionMenuRelativeTo(menu, btn, "center");
+  yes.focus();
+}
+
+// openKickConfirm shows the same red-checkmark popover used for chat
+// delete, anchored under the kick button. Cancellation routes through the
+// document-level outside-click / Esc handlers wired in
+// bindChatMessageActions; clicking the anchor again toggles closed. Single
+// confirm step matches Slack/Discord-style remove-user UX without the
+// native browser dialog.
+export function openKickConfirm(anchor: HTMLElement, onConfirm: () => void): void {
+  if (openMenuAnchor === anchor) {
+    closeMessageMenu();
+    return;
+  }
+  closeMessageMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "msg-menu msg-menu-confirm";
+  menu.setAttribute("role", "menu");
+
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "msg-menu-icon-btn msg-menu-icon-btn-danger";
+  yes.setAttribute("aria-label", "Confirm remove from room");
+  yes.title = "Confirm remove from room";
+  yes.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="5 12 10 17 19 7" />
+    </svg>`;
+  menu.append(yes);
+
+  document.body.appendChild(menu);
+  openMenuEl = menu;
+  openMenuAnchor = anchor;
+  anchor.setAttribute("aria-expanded", "true");
+  positionMenuRelativeTo(menu, anchor, "center");
+
+  const submit = () => {
+    onConfirm();
+    closeMessageMenu();
+  };
+  yes.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    submit();
+  });
+  menu.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.isComposing) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      submit();
+    }
+  });
   yes.focus();
 }
 

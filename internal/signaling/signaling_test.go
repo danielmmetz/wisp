@@ -351,6 +351,122 @@ func TestNamesPropagateAndRename(t *testing.T) {
 	}
 }
 
+func TestKick(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	// A creates, B and C join. A kicks C.
+	a := h.dial(ctx, t)
+	sendCreate(t, ctx, a, "PK_A")
+	created := mustPayload[wire.RoomCreatedPayload](t, readEnvelope(t, ctx, a))
+
+	b := h.dial(ctx, t)
+	sendJoin(t, ctx, b, created.Code, "PK_B")
+	bJoined := mustPayload[wire.RoomJoinedPayload](t, readEnvelope(t, ctx, b))
+	_ = readEnvelope(t, ctx, a) // a's peer_joined for B
+
+	c := h.dial(ctx, t)
+	sendJoin(t, ctx, c, created.Code, "PK_C")
+	cJoined := mustPayload[wire.RoomJoinedPayload](t, readEnvelope(t, ctx, c))
+	_ = readEnvelope(t, ctx, a) // a's peer_joined for C
+	_ = readEnvelope(t, ctx, b) // b's peer_joined for C
+
+	kickPayload, _ := json.Marshal(wire.KickPayload{PeerID: cJoined.PeerID})
+	writeJSON(t, ctx, a, wire.Envelope{Type: wire.TypeKick, Payload: kickPayload})
+
+	// A, B, and C all observe peer_kicked with C as the target and A as the kicker.
+	for label, conn := range map[string]*websocket.Conn{"A": a, "B": b, "C": c} {
+		env := readEnvelope(t, ctx, conn)
+		if env.Type != wire.TypePeerKicked {
+			t.Fatalf("%s: type = %q want peer_kicked", label, env.Type)
+		}
+		got := mustPayload[wire.PeerKickedPayload](t, env)
+		if got.PeerID != cJoined.PeerID || got.By != created.PeerID {
+			t.Fatalf("%s: peer_kicked = %+v want peerId=%q by=%q", label, got, cJoined.PeerID, created.PeerID)
+		}
+	}
+
+	// C's WebSocket should close shortly after.
+	_, _, err := c.Read(ctx)
+	if err == nil {
+		t.Fatalf("expected C's read to error after kick")
+	}
+
+	// Server peer count drops to two (A and B).
+	deadline := time.Now().Add(2 * time.Second)
+	for h.server.ActivePeers() != 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := h.server.ActivePeers(); got != 2 {
+		t.Fatalf("ActivePeers = %d, want 2", got)
+	}
+
+	// Re-join is permitted: kick is a soft boot, not a ban. Same code, fresh
+	// peer ID. The next frame B observes must be peer_joined for cAgain — if
+	// the server had emitted a stray peer_left for the kicked C, it would
+	// come first and the assertion would catch it.
+	cAgain := h.dial(ctx, t)
+	sendJoin(t, ctx, cAgain, created.Code, "PK_C2")
+	rejoined := mustPayload[wire.RoomJoinedPayload](t, readEnvelope(t, ctx, cAgain))
+	if rejoined.Code != created.Code {
+		t.Fatalf("rejoin code = %q want %q", rejoined.Code, created.Code)
+	}
+	if len(rejoined.Peers) != 2 {
+		t.Fatalf("rejoin peer count = %d want 2", len(rejoined.Peers))
+	}
+	bNext := readEnvelope(t, ctx, b)
+	if bNext.Type != wire.TypePeerJoined {
+		t.Fatalf("B's next frame after peer_kicked = %q, want peer_joined (got a stray peer_left?)", bNext.Type)
+	}
+	if got := mustPayload[wire.PeerJoinedPayload](t, bNext); got.PeerID != rejoined.PeerID {
+		t.Fatalf("B saw peer_joined for %q want %q", got.PeerID, rejoined.PeerID)
+	}
+	_ = bJoined
+}
+
+func TestKickSelfRejected(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	a := h.dial(ctx, t)
+	sendCreate(t, ctx, a, "PK_A")
+	created := mustPayload[wire.RoomCreatedPayload](t, readEnvelope(t, ctx, a))
+
+	kickPayload, _ := json.Marshal(wire.KickPayload{PeerID: created.PeerID})
+	writeJSON(t, ctx, a, wire.Envelope{Type: wire.TypeKick, Payload: kickPayload})
+
+	env := readEnvelope(t, ctx, a)
+	if env.Type != wire.TypeError {
+		t.Fatalf("type = %q want error", env.Type)
+	}
+	if got := mustPayload[wire.ErrorPayload](t, env); got.Code != wire.ErrBadRequest {
+		t.Fatalf("code = %q want %q", got.Code, wire.ErrBadRequest)
+	}
+}
+
+func TestKickUnknownPeer(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	a := h.dial(ctx, t)
+	sendCreate(t, ctx, a, "PK_A")
+	_ = readEnvelope(t, ctx, a)
+
+	kickPayload, _ := json.Marshal(wire.KickPayload{PeerID: "nope"})
+	writeJSON(t, ctx, a, wire.Envelope{Type: wire.TypeKick, Payload: kickPayload})
+
+	env := readEnvelope(t, ctx, a)
+	if env.Type != wire.TypeError {
+		t.Fatalf("type = %q want error", env.Type)
+	}
+	if got := mustPayload[wire.ErrorPayload](t, env); got.Code != wire.ErrPeerNotFound {
+		t.Fatalf("code = %q want %q", got.Code, wire.ErrPeerNotFound)
+	}
+}
+
 func TestRoomEmptyClosesAndCanBeRejoined(t *testing.T) {
 	// Long cooldown ensures the freed code isn't simply gc'd and forgotten;
 	// the test is about whether an explicit join still works while the
